@@ -88,7 +88,7 @@ Glossary:
 
     Building a compiler from scratch necessitates a set of utility functions to
     streamline common tasks, enhancing both efficiency and readability. Below,
-    we introduce two essential helper functions pivotal to our compiler's core
+    we introduce three essential helper functions pivotal to our compiler's core
     functionality.
 --]]
 
