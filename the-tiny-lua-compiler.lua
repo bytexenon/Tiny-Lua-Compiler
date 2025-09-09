@@ -2862,7 +2862,7 @@ function CodeGenerator:compileFunctionDeclarationNode(node)
     self:deallocateRegisters({ closureRegister, expressionRegister })
     return
   end
-  local variableName = expression.Value
+  local variableName = expression.Name
   if expression.VariableType == "Local" then
     local localRegister = self:findVariableRegister(variableName)
     self:processFunction(node, localRegister, variableName)
