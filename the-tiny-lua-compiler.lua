@@ -556,11 +556,10 @@ end
 -- and `[[...]]` has a depth of 0.
 -- Returns the depth (an integer >= 0).
 function Tokenizer:calculateDelimiterDepth()
-  local curChar = self.curChar
-  local depth   = 0
-  while curChar == "=" do
-    depth   = depth + 1
-    curChar = self:consume(1)
+  local depth = 0
+  while self.curChar == "=" do
+    depth = depth + 1
+    self:consume(1)
   end
 
   return depth
@@ -568,12 +567,11 @@ end
 
 -- Consumes ending delimiters for long strings or comments.
 function Tokenizer:consumeUntilEndingDelimiter(depth)
-  local curChar  = self.curChar
   local startPos = self.curCharPos
 
   while true do
-    if curChar == "]" then
-      curChar = self:consume(1) -- Consume the "]"
+    if self.curChar == "]" then
+      self:consume(1) -- Consume the "]"
       local depthMatch = self:calculateDelimiterDepth()
       if self.curChar == "]" and depthMatch == depth then
         -- Consume the closing brackets and return the string
@@ -583,13 +581,13 @@ function Tokenizer:consumeUntilEndingDelimiter(depth)
       end
 
     -- Check if it's end of stream
-    elseif curChar == "" then
+    elseif self.curChar == "" then
       -- End of stream reached without finding the delimiter
       error("Unexpected end of input while searching for ending delimiter")
     end
 
     -- Consume the current character and move to the next one in the stream.
-    curChar = self:consume(1)
+    self:consume(1)
   end
 end
 
@@ -629,10 +627,8 @@ end
 -- This function advances the tokenizer's position (`curCharPos` and `curChar`)
 -- past any contiguous block of whitespace (spaces, tabs, newlines, etc.).
 function Tokenizer:consumeWhitespace()
-  local curChar   = self.curChar -- Local variable for potentially faster access in loops.
-
-  while self:isWhitespace(curChar) do
-    curChar = self:consume(1) -- Advance the stream position by one character.
+  while self:isWhitespace(self.curChar) do
+    self:consume(1) -- Advance the stream position by one character.
   end
 
   -- No return value; the function's effect is modifying the tokenizer's state.
@@ -642,11 +638,10 @@ end
 -- An identifier starts with a letter or underscore, followed by any combination
 -- of letters, digits, or underscores.
 function Tokenizer:consumeIdentifier()
-  local curChar  = self.curChar
   local startPos = self.curCharPos
 
-  while self:isIdentifier(curChar) do
-    curChar = self:consume(1)
+  while self:isIdentifier(self.curChar) do
+    self:consume(1)
   end
 
   return self.code:sub(startPos, self.curCharPos - 1)
@@ -654,43 +649,42 @@ end
 
 function Tokenizer:consumeNumber()
   local startPos = self.curCharPos
-  local curChar  = self.curChar -- Optimization to avoid indexing `self` multiple times
 
   -- Hexadecimal number case
   -- 0[xX][0-9a-fA-F]+
   if self:isHexadecimalNumberPrefix() then
-    curChar = self:consume(2) -- Consume the "0x" part
-    while self:isHexadecimalNumber(curChar) do
-      curChar = self:consume(1)
+    self:consume(2) -- Consume the "0x" part
+    while self:isHexadecimalNumber(self.curChar) do
+      self:consume(1)
     end
     return self.code:sub(startPos, self.curCharPos - 1)
   end
 
   -- [0-9]*
-  while self:isDigit(curChar) do
-    curChar = self:consume(1)
+  while self:isDigit(self.curChar) do
+    self:consume(1)
   end
 
   -- Floating point number case
   -- \.[0-9]+
-  if curChar == "." then
-    curChar = self:consume(1) -- Consume the "."
-    while self:isDigit(curChar) do
-      curChar = self:consume(1)
+  if self.curChar == "." then
+    self:consume(1) -- Consume the "."
+    while self:isDigit(self.curChar) do
+      self:consume(1)
     end
   end
 
   -- Exponential (scientific) notation case
   -- [eE][+-]?[0-9]+
-  if self:isScientificNotationPrefix(curChar) then
-    curChar = self:consume(1) -- Consume the "e" or "E" characters
-    if curChar == "+" or curChar == "-" then
-      curChar = self:consume(1) -- Consume an optional sign character
+  if self:isScientificNotationPrefix(self.curChar) then
+    self:consume(1) -- Consume the "e" or "E" characters
+    if self.curChar == "+" or self.curChar == "-" then
+      self:consume(1) -- Consume an optional sign character
     end
 
     -- Exponent part
-    while self:isDigit(curChar) do
-      curChar = self:consume(1)
+    while self:isDigit(self.curChar) do
+      self:consume(1)
     end
   end
 
@@ -701,15 +695,14 @@ function Tokenizer:consumeEscapeSequence()
   -- Consume the "\" character
   self:consumeCharacter("\\")
 
-  local curChar = self.curChar
-  local convertedChar = TOKENIZER_ESCAPED_CHARACTER_CONVERSIONS[curChar]
+  local convertedChar = TOKENIZER_ESCAPED_CHARACTER_CONVERSIONS[self.curChar]
   if convertedChar then
     return convertedChar
-  elseif self:isDigit(curChar) then
-    return self:consumeNumericEscapeSequence(curChar)
+  elseif self:isDigit(self.curChar) then
+    return self:consumeNumericEscapeSequence(self.curChar)
   end
 
-  error("invalid escape sequence near '\\" .. curChar .. "'")
+  error("invalid escape sequence near '\\" .. self.curChar .. "'")
 end
 
 function Tokenizer:consumeSimpleString()
@@ -717,18 +710,17 @@ function Tokenizer:consumeSimpleString()
   local newString = {}
   self:consume(1) -- Consume the quote
 
-  local curChar = self.curChar
-  while curChar ~= delimiter do
+  while self.curChar ~= delimiter do
     -- Check if it's end of stream
-    if curChar == "" then
+    if self.curChar == "" then
       error("Unclosed string")
-    elseif curChar == "\\" then
+    elseif self.curChar == "\\" then
       local consumedEscape = self:consumeEscapeSequence()
       table.insert(newString, consumedEscape)
     else
-      table.insert(newString, curChar)
+      table.insert(newString, self.curChar)
     end
-    curChar = self:consume(1)
+    self:consume(1)
   end
   self:consume(1) -- Consume the closing quote
 
@@ -784,9 +776,8 @@ function Tokenizer:consumeOperator()
 end
 
 function Tokenizer:consumeShortComment()
-  local curChar = self.curChar
-  while curChar ~= "" and not self:isNewlineCharacter(curChar) do
-    curChar = self:consume(1)
+  while self.curChar ~= "" and not self:isNewlineCharacter(self.curChar) do
+    self:consume(1)
   end
 
   -- No return value; the function's effect is modifying the tokenizer's state.
