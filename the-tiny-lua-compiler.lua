@@ -1166,56 +1166,6 @@ function Parser:error(message)
   ))
 end
 
---// Token Type Checkers //--
--- These functions check the type of the current token and consume it if it matches.
-
--- Checks if the current token is of a specific type.
-function Parser:isTokenType(expectedType)
-  return self.currentToken and self.currentToken.TYPE == expectedType
-end
-
--- Checks if the current token is a specific keyword.
-function Parser:isKeyword(keyword)
-  local token = self.currentToken
-  return token and token.TYPE == "Keyword" and token.Value == keyword
-end
-
---// Token Expectation //--
--- These functions check the *current* token's type or value without consuming it.
--- Useful for making parsing decisions ("Is the next thing an identifier?").
-
--- Checks if the current token has the expected type. Throws an error otherwise.
-function Parser:expectTokenType(expectedType)
-  if self:isTokenType(expectedType) then
-    local previousToken = self.currentToken
-    self:consume(1) -- Advance to the next token
-    return previousToken
-  end
-
-  -- No match? Syntax error.
-  local actualType = self.currentToken.TYPE
-  self:error(string.format("Expected a %s, but found %s", expectedType,
-    tostring(actualType)))
-end
-
--- Checks if the current token is a 'Keyword' type with the expected value.
--- Throws an error otherwise.
-function Parser:expectKeyword(keyword)
-  local token = self.currentToken
-
-  -- Check if the current token is a keyword and matches the value
-  if self:isKeyword(keyword) then
-    self:consume(1) -- Advance to the next token
-    return true
-  end
-
-  -- No match? Syntax error.
-  self:error(string.format(
-    "Expected keyword '%s', but found %s [%s]",
-    keyword, tostring(token and token.TYPE), tostring(token and token.Value)
-  ))
-end
-
 --// Scope Management //--
 -- These functions manage the parser's understanding of variable scopes
 -- (blocks, functions) as it traverses the AST structure implicitly during parsing.
@@ -1333,6 +1283,42 @@ function Parser:isBinaryOperator(token)
   return token
         and token.TYPE == "Operator"
         and PARSER_LUA_BINARY_OPERATORS[token.Value]
+end
+
+--// Token Expectation //--
+-- These functions check the *current* token's type or value without consuming it.
+-- Useful for making parsing decisions ("Is the next thing an identifier?").
+
+-- Checks if the current token has the expected type. Throws an error otherwise.
+function Parser:expectTokenType(expectedType)
+  if self:checkTokenType(expectedType) then
+    local previousToken = self.currentToken
+    self:consume(1) -- Advance to the next token
+    return previousToken
+  end
+
+  -- No match? Syntax error.
+  local actualType = self.currentToken.TYPE
+  self:error(string.format("Expected a %s, but found %s", expectedType,
+    tostring(actualType)))
+end
+
+-- Checks if the current token is a 'Keyword' type with the expected value.
+-- Throws an error otherwise.
+function Parser:expectKeyword(keyword)
+  local token = self.currentToken
+
+  -- Check if the current token is a keyword and matches the value
+  if self:checkKeyword(keyword) then
+    self:consume(1) -- Advance to the next token
+    return true
+  end
+
+  -- No match? Syntax error.
+  self:error(string.format(
+    "Expected keyword '%s', but found %s [%s]",
+    keyword, tostring(token and token.TYPE), tostring(token and token.Value)
+  ))
 end
 
 --// AST Node Checkers //--
@@ -1508,7 +1494,7 @@ function Parser:consumeBracketTableIndex(currentExpression)
   -- Parse the expression that defines the index inside the brackets.
   local indexExpression = self:consumeExpression()
   if not indexExpression then
-      self:error("Expected an expression inside brackets for table index")
+    self:error("Expected an expression inside brackets for table index")
   end
 
   -- Expect and consume the closing bracket ']'
@@ -1538,7 +1524,7 @@ function Parser:consumeTable()
 
     -- Determine which type of table field we are parsing.
     if self:checkTokenType("LeftBracket") then
-      -- Case 1: Explicit key in brackets, e.g., `[1+2] = "value"`
+      -- Explicit key in brackets, e.g., `[1+2] = "value"`
       self:consume(1) -- Consume "["
       key = self:consumeExpression()
       self:expectTokenType("RightBracket")
@@ -1546,14 +1532,14 @@ function Parser:consumeTable()
       value = self:consumeExpression()
 
     elseif self:checkTokenType("Identifier") and self:checkTokenType("Equals", self:lookAhead(1)) then
-      -- Case 2: Identifier key, e.g., `name = "value"`
+      -- Identifier key, e.g., `name = "value"`
       -- This is syntatic sugar for `["name"] = "value"`.
       key = { TYPE  = "String", Value = self.currentToken.Value }
       self:consume(2) -- Consume the identifier and the "="
       value = self:consumeExpression()
 
     else
-      -- Case 3: Implicit numeric key, e.g. `"value1", MY_VAR, 42`
+      -- Implicit numeric key, e.g. `"value1", MY_VAR, 42`
       -- This is syntatic sugar for `[1] = "value1", [2] = MY_VAR, [3] = 42`.
       isImplicitKey = true
       key = { TYPE  = "Number", Value = nextImplicitKey }
@@ -1599,7 +1585,7 @@ function Parser:consumeTable()
   }
 end
 
-function Parser:consumeFunctionCall(currentExpression)
+function Parser:consumeFunctionCall(currentExpression, isMethodCall)
   self:consumeToken("LeftParen") -- Expect and consume the left parenthesis '('
   local arguments = self:consumeExpressions()
   self:adjustMultiretNodes(arguments, -1)
@@ -1609,7 +1595,7 @@ function Parser:consumeFunctionCall(currentExpression)
     TYPE              = "FunctionCall",
     Expression        = currentExpression,
     Arguments         = arguments,
-    IsMethodCall      = false,
+    IsMethodCall      = isMethodCall and true,
     IsTailcall        = false,
     ReturnValueAmount = 1
   }
@@ -1618,44 +1604,36 @@ end
 function Parser:consumeImplicitFunctionCall(lvalue)
   local currentToken     = self.currentToken
   local currentTokenType = currentToken.TYPE
+  local arguments = {}
 
-  -- <string>
+  -- `print "hello, world"` case
   if currentTokenType == "String" then
-    local arguments = { {
+    arguments = { {
       TYPE  = "String",
       Value = currentToken.Value
     } }
-
     self:consume(1) -- Consume the string
-    return {
-      TYPE              = "FunctionCall",
-      Expression        = lvalue,
-      Arguments         = arguments,
-      IsMethodCall      = false,
-      IsTailcall        = false,
-      ReturnValueAmount = 1
-    }
 
-  -- <table>
+  -- `print {1, 2, 3}` case
   elseif currentTokenType == "LeftBrace" then
-    local arguments = { self:consumeTable() }
-    return {
-      TYPE              = "FunctionCall",
-      Expression        = lvalue,
-      Arguments         = arguments,
-      IsMethodCall      = false,
-      IsTailcall        = false,
-      ReturnValueAmount = 1
-    }
+    arguments = { self:consumeTable() }
   end
 
-  self:error("Unexpected token type")
+  return {
+    TYPE              = "FunctionCall",
+    Expression        = lvalue,
+    Arguments         = arguments,
+    IsMethodCall      = false,
+    IsTailcall        = false,
+    ReturnValueAmount = 1
+  }
 end
 
 function Parser:consumeMethodCall(currentExpression)
   self:consumeToken("Colon") -- Expect and consume the colon (':')
   local methodIdentifier = self:consumeIdentifier()
 
+  -- Convert the `table:method` part to an AST node
   local methodIndexNode = {
     TYPE  = "TableIndex",
     Index = {
@@ -1665,10 +1643,8 @@ function Parser:consumeMethodCall(currentExpression)
     Expression = currentExpression
   }
 
-  local functionCallNode = self:consumeFunctionCall(methodIndexNode)
-  -- Mark the function call as a method call
-  functionCallNode.IsMethodCall = true
-  return functionCallNode
+  -- Consume the function call and mark it as a method call
+  return self:consumeFunctionCall(methodIndexNode, true)
 end
 
 function Parser:consumeOptionalSemicolon()
@@ -1802,12 +1778,11 @@ function Parser:parseUnaryOperator()
 end
 
 function Parser:parseBinaryExpression(minPrecedence)
-  -- <binary> ::= <unary> <binary operator> <binary> | <unary>
-  minPrecedence = minPrecedence or 0
+  -- <binary> ::= <unary> <binary_operator> <binary> | <unary>
   local expression = self:parseUnaryOperator() -- <unary>
   if not expression then return end
 
-  -- [<binary operator> <binary>]
+  -- [<binary_operator> <binary>]
   while true do
     local operatorToken = self.currentToken
     local precedence = operatorToken and PARSER_OPERATOR_PRECEDENCE[operatorToken.Value]
@@ -1947,10 +1922,9 @@ function Parser:parseReturn()
   local expressions = self:consumeExpressions()
   self:adjustMultiretNodes(expressions, -1)
 
-  -- Check if the return statement has only one expression
-  -- and it's a FunctionCall node, if it is, we mark the function call
-  -- with "IsTailcall" flag to give a hint to the code generator
-  -- to make it generate TAILCALL instruction instead, which is
+  -- Check if the return statement has only one expression and it's a "FunctionCall" node,
+  -- if it is, we mark the function call with "IsTailcall" flag to give a hint to
+  -- the code generator to make it generate TAILCALL instruction instead, which is
   -- faster than CALL
   local lastExpression = expressions[#expressions]
   if lastExpression and lastExpression.TYPE == "FunctionCall" then
@@ -2208,7 +2182,7 @@ function Parser:getNextNode()
   if not currentToken then return end
 
   local node
-  if self:isTokenType("Keyword") then
+  if self:checkTokenType("Keyword") then
     local keyword = currentToken.Value
 
     -- First, check for keywords that terminate a block. If found, we stop
