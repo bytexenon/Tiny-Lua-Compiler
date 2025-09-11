@@ -3177,7 +3177,7 @@ end
 
 function CodeGenerator:processFunction(node, expressionRegister, name)
   local codeBlock    = node.CodeBlock
-  local parameters   = node.Parameters or {}
+  local parameters   = node.Parameters
   local isVarArg     = node.IsVarArg
   local oldProto     = self.currentProto
   local proto        = self:newProto()
@@ -3242,10 +3242,13 @@ local LUA_VERSION_BYTE     = string.char(0x51) -- 0x51 signifies Lua version 5.1
 local LUA_FORMAT_VERSION   = string.char(0)    -- 0 = official format version
 local LUA_ENDIANNESS       = string.char(1)    -- 1 = little-endian, 0 = big-endian
 local LUA_SIZE_INT         = string.char(4)    -- sizeof(int) = 4 bytes
-local LUA_SIZE_SIZET       = string.char(8)    -- sizeof(size_t) = 8 bytes (for string lengths)
+local LUA_SIZE_SIZE_T      = string.char(8)    -- sizeof(size_t) = 8 bytes (for string lengths)
 local LUA_SIZE_INSTRUCTION = string.char(4)    -- sizeof(Instruction) = 4 bytes
 local LUA_SIZE_LUA_NUMBER  = string.char(8)    -- sizeof(lua_Number) = 8 bytes (double)
 local LUA_INTEGRAL_FLAG    = string.char(0)    -- 0 = lua_Number is floating-point
+local LUA_COMMON_HEADER    = LUA_SIGNATURE .. LUA_VERSION_BYTE .. LUA_FORMAT_VERSION .. LUA_ENDIANNESS ..
+                              LUA_SIZE_INT .. LUA_SIZE_SIZE_T .. LUA_SIZE_INSTRUCTION ..
+                              LUA_SIZE_LUA_NUMBER .. LUA_INTEGRAL_FLAG
 
 -- Lua 5.1 Instruction Argument Modes. Instructions have different ways of
 -- encoding their arguments (operands) within their 32 bits.
@@ -3297,6 +3300,8 @@ local LUA_TSTRING  = 4
 --   - opcodeIndex: The index (0-based) of the opcode in the Lua 5.1 instruction set.
 --   - argumentMode: The mode used to encode the instruction arguments.
 --
+--  TODO: Implement Argument Mode Flags?
+--
 -- Source: https://www.lua.org/source/5.1/lopcodes.c.html#luaP_opmodes
 local COMPILER_OPCODE_LOOKUP = {
   ["MOVE"]     = {0, MODE_iABC},  ["LOADK"]     = {1, MODE_iABx},  ["LOADBOOL"] = {2, MODE_iABC},  ["LOADNIL"]   = {3, MODE_iABC},
@@ -3343,7 +3348,20 @@ function Compiler.new(mainProto)
   return CompilerInstance
 end
 
---// Byte Manipulation //--
+--// Utility Functions //--
+function Compiler:frexp(value)
+  -- Use built-in if available (Lua 5.1, Lua 5.2)
+  if math.frexp then
+    return math.frexp(value)
+  end
+
+  if value == 0 then
+    return 0, 0
+  end
+  local exponent = math.floor(math.log(math.abs(value)) / math.log(2)) + 1
+  local mantissa = value / (2 ^ exponent)
+  return mantissa, exponent
+end
 
 -- A bitwise left shift, simulated with multiplication.
 function Compiler:lshift(value, shift)
@@ -3408,7 +3426,7 @@ function Compiler:makeDouble(value)
 
   -- Deconstruct the number into its core parts.
   local sign = (value < 0 and 1) or 0
-  local mantissa, exponent = math.frexp(math.abs(value))
+  local mantissa, exponent = self:frexp(math.abs(value))
 
   -- The exponent needs a "bias". frexp gives us an exponent 'e' where the
   -- number is `mantissa * 2^e`. IEEE 754 format needs a biased exponent.
@@ -3615,39 +3633,9 @@ function Compiler:makeFunction(proto)
   })
 end
 
-
--- Creates the global Lua bytecode header. This identifies the file as Lua
--- bytecode and specifies crucial format details like endianness and type sizes.
---
--- Lua 5.1 Bytecode Header Format (12 bytes total):
---   Signature (4 bytes):           "\27Lua" (ASCII: ESC L u a)
---   Version (1 byte):              0x51 for Lua 5.1
---   Format (1 byte):               0 (0 = official VM format)
---   Endianness (1 byte):           1 = little-endian, 0 = big-endian
---   sizeof(int) (1 byte):          Typically 4.
---   sizeof(size_t) (1 byte):       Typically 4 or 8 (determines string length size). Here using 8.
---   sizeof(Instruction) (1 byte):  Must be 4.
---   sizeof(lua_Number) (1 byte):   Must be 8 (for IEEE 754 double).
---   Integral Flag (1 byte):        0 = floats (lua_Number is float), 1 = integers only.
-function Compiler:makeHeader()
-  return table.concat({
-    LUA_SIGNATURE,
-    LUA_VERSION_BYTE,
-    LUA_FORMAT_VERSION,
-    LUA_ENDIANNESS,
-    LUA_SIZE_INT,
-    LUA_SIZE_SIZET,
-    LUA_SIZE_INSTRUCTION,
-    LUA_SIZE_LUA_NUMBER,
-    LUA_INTEGRAL_FLAG
-  })
-end
-
 --// Main //--
 function Compiler:compile()
-  local header    = self:makeHeader()
-  local mainProto = self:makeFunction(self.mainProto)
-  return header .. mainProto
+  return LUA_COMMON_HEADER .. self:makeFunction(self.mainProto)
 end
 
 -- Now I'm just exporting everything...
