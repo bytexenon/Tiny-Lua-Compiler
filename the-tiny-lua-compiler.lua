@@ -3254,6 +3254,7 @@ local LUA_COMMON_HEADER    = LUA_SIGNATURE .. LUA_VERSION_BYTE .. LUA_FORMAT_VER
 -- encoding their arguments (operands) within their 32 bits.
 -- See "Lua 5.1 Instruction Formats" diagram below for details.
 
+-- Instruction argument modes
 --  - iABC:  Uses three arguments: A (8 bits), B (9 bits), C (9 bits).
 --           Common for operations involving 3 registers or 2 regs + 1 constant/literal.
 --           [ Op(6) | A(8) | C(9) | B(9) ]
@@ -3272,6 +3273,12 @@ local MODE_iABx = 1
 --           This allows for jumps in both directions (forward and backward).
 --           [ Op(6) | A(8) |   sBx(18)    ]
 local MODE_iAsBx = 2
+
+-- Operand types
+local OpArgN = 0 -- Argument is not used
+local OpArgU = 1 -- Argument is used
+local OpArgR = 2 -- Argument is a register or a jump offset
+local OpArgK = 3 -- Argument is a constant or register/constant
 
 -- Function Header Flags
 local VARARG_NONE     = 0
@@ -3296,24 +3303,24 @@ local LUA_TSTRING  = 4
 -- This table maps all Lua 5.1 opcodes to their respective argument modes,
 -- it's used to determine how to encode the instruction arguments.
 --
---  Format: [Opname] = {opcodeIndex, argumentMode}
+--  Format: [Opname] = {opcodeIndex, argumentMode, argBMode, argCMode}
 --   - opcodeIndex: The index (0-based) of the opcode in the Lua 5.1 instruction set.
 --   - argumentMode: The mode used to encode the instruction arguments.
---
---  TODO: Implement Argument Mode Flags?
+--   - argBMode: The type of the B argument (OpArgN, OpArgU, OpArgR, OpArgK).
+--   - argCMode: The type of the C argument (OpArgN, OpArgU, OpArgR, OpArgK).
 --
 -- Source: https://www.lua.org/source/5.1/lopcodes.c.html#luaP_opmodes
 local COMPILER_OPCODE_LOOKUP = {
-  ["MOVE"]     = {0, MODE_iABC},  ["LOADK"]     = {1, MODE_iABx},  ["LOADBOOL"] = {2, MODE_iABC},  ["LOADNIL"]   = {3, MODE_iABC},
-  ["GETUPVAL"] = {4, MODE_iABC},  ["GETGLOBAL"] = {5, MODE_iABx},  ["GETTABLE"] = {6, MODE_iABC},  ["SETGLOBAL"] = {7, MODE_iABx},
-  ["SETUPVAL"] = {8, MODE_iABC},  ["SETTABLE"]  = {9, MODE_iABC},  ["NEWTABLE"] = {10, MODE_iABC}, ["SELF"]      = {11, MODE_iABC},
-  ["ADD"]      = {12, MODE_iABC}, ["SUB"]       = {13, MODE_iABC}, ["MUL"]      = {14, MODE_iABC}, ["DIV"]       = {15, MODE_iABC},
-  ["MOD"]      = {16, MODE_iABC}, ["POW"]       = {17, MODE_iABC}, ["UNM"]      = {18, MODE_iABC}, ["NOT"]       = {19, MODE_iABC},
-  ["LEN"]      = {20, MODE_iABC}, ["CONCAT"]    = {21, MODE_iABC}, ["JMP"]      = {22, MODE_iAsBx},["EQ"]        = {23, MODE_iABC},
-  ["LT"]       = {24, MODE_iABC}, ["LE"]        = {25, MODE_iABC}, ["TEST"]     = {26, MODE_iABC}, ["TESTSET"]   = {27, MODE_iABC},
-  ["CALL"]     = {28, MODE_iABC}, ["TAILCALL"]  = {29, MODE_iABC}, ["RETURN"]   = {30, MODE_iABC}, ["FORLOOP"]   = {31, MODE_iAsBx},
-  ["FORPREP"]  = {32, MODE_iAsBx},["TFORLOOP"]  = {33, MODE_iABC}, ["SETLIST"]  = {34, MODE_iABC}, ["CLOSE"]     = {35, MODE_iABC},
-  ["CLOSURE"]  = {36, MODE_iABx}, ["VARARG"]    = {37, MODE_iABC}
+  ["MOVE"]     = {0, MODE_iABC, OpArgR, OpArgN},  ["LOADK"]     = {1, MODE_iABx, OpArgK, OpArgN},  ["LOADBOOL"] = {2, MODE_iABC, OpArgU, OpArgU},  ["LOADNIL"]   = {3, MODE_iABC, OpArgR, OpArgN},
+  ["GETUPVAL"] = {4, MODE_iABC, OpArgU, OpArgN},  ["GETGLOBAL"] = {5, MODE_iABx, OpArgK, OpArgN},  ["GETTABLE"] = {6, MODE_iABC, OpArgR, OpArgK},  ["SETGLOBAL"] = {7, MODE_iABx, OpArgK, OpArgN},
+  ["SETUPVAL"] = {8, MODE_iABC, OpArgU, OpArgN},  ["SETTABLE"]  = {9, MODE_iABC, OpArgK, OpArgK},  ["NEWTABLE"] = {10, MODE_iABC, OpArgU, OpArgU}, ["SELF"]      = {11, MODE_iABC, OpArgR, OpArgK},
+  ["ADD"]      = {12, MODE_iABC, OpArgK, OpArgK}, ["SUB"]       = {13, MODE_iABC, OpArgK, OpArgK}, ["MUL"]      = {14, MODE_iABC, OpArgK, OpArgK}, ["DIV"]       = {15, MODE_iABC, OpArgK, OpArgK},
+  ["MOD"]      = {16, MODE_iABC, OpArgK, OpArgK}, ["POW"]       = {17, MODE_iABC, OpArgK, OpArgK}, ["UNM"]      = {18, MODE_iABC, OpArgR, OpArgN}, ["NOT"]       = {19, MODE_iABC, OpArgR, OpArgN},
+  ["LEN"]      = {20, MODE_iABC, OpArgR, OpArgN}, ["CONCAT"]    = {21, MODE_iABC, OpArgR, OpArgR}, ["JMP"]      = {22, MODE_iAsBx, OpArgR, OpArgN},["EQ"]        = {23, MODE_iABC, OpArgK, OpArgK},
+  ["LT"]       = {24, MODE_iABC, OpArgK, OpArgK}, ["LE"]        = {25, MODE_iABC, OpArgK, OpArgK}, ["TEST"]     = {26, MODE_iABC, OpArgR, OpArgU}, ["TESTSET"]   = {27, MODE_iABC, OpArgR, OpArgU},
+  ["CALL"]     = {28, MODE_iABC, OpArgU, OpArgU}, ["TAILCALL"]  = {29, MODE_iABC, OpArgU, OpArgU}, ["RETURN"]   = {30, MODE_iABC, OpArgU, OpArgN}, ["FORLOOP"]   = {31, MODE_iAsBx, OpArgR, OpArgN},
+  ["FORPREP"]  = {32, MODE_iAsBx, OpArgR, OpArgN},["TFORLOOP"]  = {33, MODE_iABC, OpArgN, OpArgU}, ["SETLIST"]  = {34, MODE_iABC, OpArgU, OpArgU}, ["CLOSE"]     = {35, MODE_iABC, OpArgN, OpArgN},
+  ["CLOSURE"]  = {36, MODE_iABx, OpArgU, OpArgN}, ["VARARG"]    = {37, MODE_iABC, OpArgU, OpArgN}
 }
 
 --[[
@@ -3351,13 +3358,9 @@ end
 --// Utility Functions //--
 function Compiler:frexp(value)
   -- Use built-in if available (Lua 5.1, Lua 5.2)
-  if math.frexp then
-    return math.frexp(value)
-  end
+  if math.frexp then return math.frexp(value) end
+  if value == 0 then return 0, 0 end
 
-  if value == 0 then
-    return 0, 0
-  end
   local exponent = math.floor(math.log(math.abs(value)) / math.log(2)) + 1
   local mantissa = value / (2 ^ exponent)
   return mantissa, exponent
@@ -3382,25 +3385,22 @@ function Compiler:toUnsigned2(value)
   return value
 end
 
-function Compiler:makeBytes(value, byteCount)
-  local bytes = {}
-  for i = 1, byteCount do
-    bytes[i] = value % 256
-    value = math.floor(value / 256)
-  end
-  return string.char(unpack(bytes))
-end
-
 function Compiler:makeOneByte(value)
   return string.char(value % 256)
 end
 
 function Compiler:makeFourBytes(value)
-  return self:makeBytes(value, 4)
+  local b1 = value % 256; value = math.floor(value / 256)
+  local b2 = value % 256; value = math.floor(value / 256)
+  local b3 = value % 256; value = math.floor(value / 256)
+  local b4 = value % 256
+  return string.char(b1, b2, b3, b4)
 end
 
 function Compiler:makeEightBytes(value)
-  return self:makeBytes(value, 8)
+  local lowWord  = value % 2^32
+  local highWord = math.floor(value / 2^32)
+  return self:makeFourBytes(lowWord) .. self:makeFourBytes(highWord)
 end
 
 function Compiler:makeDouble(value)
@@ -3504,7 +3504,13 @@ function Compiler:makeInstruction(instruction)
     error("Compiler: Unsupported instruction '" .. tostring(instructionName) .. "'")
   end
 
-  local opcode, opmode = opcodeTable[1], opcodeTable[2]
+  local opcode, opmode, arg1, arg2 = opcodeTable[1], opcodeTable[2], opcodeTable[3], opcodeTable[4]
+  local a = instruction[2]
+
+  -- Check for overflow first
+  if a < 0 or a > 255 then
+    error("Compiler: Operand A overflow in instruction '" .. tostring(instructionName) .. "'")
+  end
 
   -- We build the 32-bit number by shifting each component to its designated
   -- position and adding them together.
@@ -3517,10 +3523,23 @@ function Compiler:makeInstruction(instruction)
   -- Bx/sBx    | 18          | 14            | 14-31 (for iABx/iAsBx)
   -- B         | 9           | 23            | 23-31 (for iABC)
 
-  local a = self:lshift(self:toUnsigned(instruction[2]), 6)
+  a = self:lshift(self:toUnsigned(a), 6)
   if opmode == MODE_iABC then
-    local c = self:lshift(self:toUnsigned2(instruction[4]), 14)
-    local b = self:lshift(self:toUnsigned2(instruction[3]), 23)
+    local b, c = instruction[3], instruction[4]
+
+    -- Check for overflows first
+    if b < -256 or b > 255 then
+      error("Compiler: Operand B overflow in instruction '" .. tostring(instructionName) .. "'")
+    end
+    if c < -256 or c > 255 then
+      error("Compiler: Operand C overflow in instruction '" .. tostring(instructionName) .. "'")
+    end
+
+    -- Handle RK() operands (register or constant)
+    if arg1 == OpArgK then b = self:lshift(self:toUnsigned2(b), 23)
+    else                   b = self:lshift(b, 23) end
+    if arg2 == OpArgK then c = self:lshift(self:toUnsigned2(c), 14)
+    else                   c = self:lshift(c, 14) end
 
     -- [ Op(6) | A(8) | C(9) | B(9) ]
     return self:makeFourBytes(opcode + a + b + c)
@@ -3538,9 +3557,8 @@ function Compiler:makeInstruction(instruction)
     --  - positive values (0 to 131071)
     --
     -- This allows us to represent both positive and negative offsets.
-    -- To get sBx, we need to add 131071 to Bx.
-    local biasedB = b + 131071
-    local sbx = self:lshift(self:toUnsigned(biasedB), 14)
+    -- To get sBx, we need to add 131071 (2^17 - 1) to Bx.
+    local sbx = self:lshift(b + (2^17 - 1), 14)
 
     -- [ Op(6) | A(8) |    sBx(18)    ]
     return self:makeFourBytes(opcode + a + sbx)
@@ -3611,6 +3629,14 @@ end
     +-----------------------------+-----------------------------------------+
 --]]
 function Compiler:makeFunction(proto)
+  -- Basic validation of the function prototype.
+  if not proto.code or not proto.constants then
+    error("Compiler: Invalid function prototype")
+  elseif #proto.upvalues > 255    then error("Compiler: Too many upvalues in function prototype (max 255)")
+  elseif proto.numParams > 255    then error("Compiler: Too many parameters in function prototype (max 255)")
+  elseif proto.maxStackSize > 255 then error("Compiler: Max stack size too large in function prototype (max 255)")
+  end
+
   return table.concat({
     self:makeString(proto.functionName),  -- Source name
     self:makeFourBytes(0),                -- Line defined (debug)
