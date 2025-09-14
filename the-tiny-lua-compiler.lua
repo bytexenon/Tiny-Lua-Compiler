@@ -1086,7 +1086,6 @@ Parser.__index = Parser -- Set up for method calls via `.`
 function Parser.new(tokens)
   --// Type Checking //--
   assert(type(tokens) == "table", "Parser.new requires a table of tokens. Got: " .. type(tokens))
-  assert(#tokens > 0, "Parser.new requires a non-empty table of tokens.")
 
   --// Instance Creation //--
   local ParserInstance = setmetatable({}, Parser)
@@ -1479,7 +1478,7 @@ function Parser:consumeTableIndex(currentExpression)
       TYPE  = "String",
       Value = indexValue
     },
-    Expression = currentExpression -- The AST node representing the base table expression
+    Expression = currentExpression
   }
 end
 
@@ -1760,19 +1759,21 @@ function Parser:parsePrefixExpression()
 end
 
 function Parser:parseUnaryOperator()
-  local currentToken = self.currentToken
+  local operator = self.currentToken
 
   -- <unary> ::= <unary operator> <unary> | <primary>
-  if not self:isUnaryOperator(currentToken) then
+  if not self:isUnaryOperator(operator) then
     return self:parsePrefixExpression()
   end
 
   -- <unary operator> <unary>
   self:consume(1) -- Consume the operator
   local expression = self:parseBinaryExpression(PARSER_UNARY_OPERATOR_PRECEDENCE)
+  if not expression then self:error("Unexpected end") end
+
   return {
     TYPE     = "UnaryOperator",
-    Operator = currentToken.Value,
+    Operator = operator.Value,
     Operand  = expression
   }
 end
@@ -1889,10 +1890,12 @@ function Parser:parseRepeat()
   -- repeat <codeblock> until <condition_expr>
   self:consumeToken("Keyword", "repeat")
   self:enterScope()
-  -- Use the special function to account for the edge case.
+  -- Note: There's a Lua edge case which allows local variables declared
+  -- inside the `repeat ... until` block to be used in the `until` condition.
+  -- Therefore, we enter the scope before parsing the code block,
+  -- but we only exit the scope after parsing the condition.
   local codeblock = self:parseCodeBlockInCurrentScope()
-  -- Don't exit the scope yet as its variables can still be used
-  -- inside the condition.
+  -- Don't exit the scope yet as its variables can still be used in the condition.
   self:consumeToken("Keyword", "until")
   local condition = self:consumeExpression()
   self:exitScope()
@@ -1925,7 +1928,7 @@ function Parser:parseReturn()
   -- Check if the return statement has only one expression and it's a "FunctionCall" node,
   -- if it is, we mark the function call with "IsTailcall" flag to give a hint to
   -- the code generator to make it generate TAILCALL instruction instead, which is
-  -- faster than CALL
+  -- faster than CALL.
   local lastExpression = expressions[#expressions]
   if lastExpression and lastExpression.TYPE == "FunctionCall" then
     lastExpression.IsTailcall = true
@@ -1999,6 +2002,8 @@ function Parser:parseFor()
   -- The presence of a comma or the `in` keyword signals a generic loop.
   if self:checkTokenType("Comma") or self:checkKeyword("in") then
     -- It's a generic 'for' loop: `for var1, var2, ... in expr1, expr2, ... do ... end`.
+    -- Even though the generic for loop allows infinite expressions after `in`,
+    -- the Lua VM only uses the first three (the generator, state, and control).
 
     -- Parse the list of iterator variables.
     local iteratorVariables = { variableName }
@@ -2012,7 +2017,7 @@ function Parser:parseFor()
     self:expectKeyword("in")
     local expressions = self:consumeExpressions()
 
-    -- TODO: Explain why.
+    -- Adjust the expressions to account for the generator, state, and control expressions.
     self:adjustMultiretNodes(expressions, 3)
 
     -- Parse the loop body.
@@ -2404,8 +2409,13 @@ end
 function CodeGenerator:deallocateRegister(register)
   local expectedRegister = self.nextFreeRegister - 1
   if register ~= expectedRegister then
-    print("Expected: " .. expectedRegister .. ", got: " .. register)
-    error("Attempt to deallocate register out of order")
+    error(
+      string.format(
+        "Attempt to deallocate register out of order. Expected: %d, got: %d",
+        expectedRegister,
+        register
+      )
+    )
   end
 
   self.nextFreeRegister = expectedRegister
@@ -2593,7 +2603,7 @@ function CodeGenerator:findOrCreateUpvalue(value)
 end
 
 function CodeGenerator:emitInstruction(opname, a, b, c)
-  local instruction = { opname, a, b, c }
+  local instruction = { opname, a, b, c or 0 }
   table.insert(self.currentProto.code, instruction)
   return #self.currentProto.code
 end
@@ -2811,7 +2821,7 @@ function CodeGenerator:compileBinaryOperatorNode(node, expressionRegister)
 
   -- Concatenation operator
   elseif nodeOperator == ".." then
-    local leftExpressionRegister = self:processExpressionNode(node.Left)
+    local leftExpressionRegister  = self:processExpressionNode(node.Left)
     local rightExpressionRegister = self:processExpressionNode(node.Right)
     if (rightExpressionRegister - leftExpressionRegister) ~= 1 then
       error("Concatenation requires consecutive registers")
@@ -3112,7 +3122,7 @@ end
 --// Code Generation //--
 
 -- Returns either a positive integer, indicating a register index, or
--- a negative integer, indicating a constant index
+-- a negative integer, indicating a constant index. Used for RK() operands.
 function CodeGenerator:processConstantOrExpression(node, expressionRegister)
   local nodeType = node.TYPE
 
