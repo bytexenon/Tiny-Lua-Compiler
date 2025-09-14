@@ -3093,8 +3093,13 @@ function CodeGenerator:processConstantOrExpression(node, expressionRegister)
   local nodeType = node.TYPE
 
   if nodeType == "String" or nodeType == "Number" then
-    -- Return a negative integer, indicating an index in constant table
-    return self:findOrCreateConstant(node.Value)
+    local constantIndex = self:findOrCreateConstant(node.Value)
+
+    -- Check if it can fit in 9-bit signed operand.
+    if -constantIndex < 255 then
+      -- Return a negative integer, indicating an index in constant table.
+      return constantIndex
+    end
   end
 
   return self:processExpressionNode(node, expressionRegister)
