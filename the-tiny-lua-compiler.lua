@@ -2275,7 +2275,9 @@ end
 
 local unpack = (unpack or table.unpack)
 
-local COMPILER_MIN_STACK_SIZE = 2 -- Registers 0/1 are always valid
+local COMPILER_MIN_STACK_SIZE = 2   -- Registers 0/1 are always valid
+local COMPILER_MAX_REGISTERS  = 250 -- 200 variables, 50 temp (5 reserved for safety)
+
 local COMPILER_SETLIST_MAX = 50
 local COMPILER_ARITHMETIC_OPERATOR_LOOKUP = {
   ["+"] = "ADD", ["-"] = "SUB",
@@ -2387,6 +2389,10 @@ function CodeGenerator:allocateRegister()
 
   -- Grow the stack size if necessary
   if newRegister > self.currentProto.maxStackSize then
+    if newRegister > COMPILER_MAX_REGISTERS then
+      error("Exceeded maximum register limit of " .. COMPILER_MAX_REGISTERS .. " registers")
+    end
+
     -- Lua registers are 0-indexed, so we add 1
     -- to compensate for the extra register (0)
     self.currentProto.maxStackSize = newRegister + 1
