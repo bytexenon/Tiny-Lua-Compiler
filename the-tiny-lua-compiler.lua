@@ -2514,16 +2514,16 @@ function CodeGenerator:enterScope(isFunctionScope)
   }
   self.locals           = newScope.locals
   self.nextFreeRegister = newScope.nextFreeRegister
+  self.currentScope     = newScope
 
   table.insert(self.scopes, newScope)
-  self.currentScope = newScope
   return newScope
 end
 
 function CodeGenerator:exitScope()
   local scopes = self.scopes
+  table.remove(scopes) -- Remove the last scope
 
-  table.remove(scopes)
   if #scopes > 0 then
     local currentScope = scopes[#scopes]
 
@@ -2688,10 +2688,10 @@ end
 
 function CodeGenerator:compileTableIndexNode(node, expressionRegister)
   self:processExpressionNode(node.Expression, expressionRegister)
-  local indexRegister = self:processExpressionNode(node.Index)
+  local indexRegister = self:processConstantOrExpression(node.Index)
   -- OP_GETTABLE [A, B, C]    R(A) := R(B)[RK(C)]
   self:emitInstruction("GETTABLE", expressionRegister, expressionRegister, indexRegister)
-  self:deallocateRegister(indexRegister)
+  self:deallocateIfRegister(indexRegister)
   return expressionRegister
 end
 
@@ -2703,12 +2703,14 @@ function CodeGenerator:compileTableNode(node, expressionRegister)
   -- OP_NEWTABLE [A, B, C]    R(A) := {} (size = B,C)
   self:emitInstruction("NEWTABLE", expressionRegister, sizeB, sizeC)
   for _, element in ipairs(explicitElements) do
-    local valueRegister = self:processExpressionNode(element.Value)
-    local keyRegister   = self:processExpressionNode(element.Key)
-    self:deallocateRegisters({ keyRegister, valueRegister })
+    local keyRegister   = self:processConstantOrExpression(element.Key)
+    local valueRegister = self:processConstantOrExpression(element.Value)
 
     -- OP_SETTABLE [A, B, C]    R(A)[RK(B)] := RK(C)
     self:emitInstruction("SETTABLE", expressionRegister, keyRegister, valueRegister)
+
+    self:deallocateIfRegister(valueRegister)
+    self:deallocateIfRegister(keyRegister)
   end
 
   local pageAmount = math.ceil(#implicitElements / COMPILER_SETLIST_MAX)
@@ -2781,22 +2783,25 @@ function CodeGenerator:compileBinaryOperatorNode(node, expressionRegister)
 
   -- Comparison operators (~=, <=, >=)
   elseif COMPILER_COMPARISON_OPERATOR_LOOKUP[nodeOperator] then
-    local leftExpressionRegister  = self:processExpressionNode(node.Left)
-    local rightExpressionRegister = self:processExpressionNode(node.Right)
+    local leftExpressionRegister  = self:processConstantOrExpression(node.Left)
+    local rightExpressionRegister = self:processConstantOrExpression(node.Right)
     local nodeOperatorTable = COMPILER_COMPARISON_INSTRUCTION_LOOKUP[nodeOperator]
     local instruction, flag = nodeOperatorTable[1], nodeOperatorTable[2]
-    if nodeOperator == ">" or nodeOperator == ">=" then
-      leftExpressionRegister, rightExpressionRegister = rightExpressionRegister, leftExpressionRegister
+    local flipOperands = (nodeOperator == ">" or nodeOperator == ">=")
+    local b, c = leftExpressionRegister, rightExpressionRegister
+    if flipOperands then
+      b, c = rightExpressionRegister, leftExpressionRegister
     end
 
     -- [A, B, C]    if ((RK(B) <operator> RK(C)) ~= A) then pc++
-    self:emitInstruction(instruction, flag, leftExpressionRegister, rightExpressionRegister)
+    self:emitInstruction(instruction, flag, b, c)
     -- OP_JMP [A, sBx]    pc+=sBx
     self:emitInstruction("JMP", 0, 1)
     -- OP_LOADBOOL [A, B, C]    R(A) := (Bool)B if (C) pc++
     self:emitInstruction("LOADBOOL", expressionRegister, 0, 1)
     self:emitInstruction("LOADBOOL", expressionRegister, 1, 0)
-    self:deallocateRegisters({ leftExpressionRegister, rightExpressionRegister })
+    self:deallocateIfRegister(rightExpressionRegister)
+    self:deallocateIfRegister(leftExpressionRegister)
 
   -- Concatenation operator
   elseif nodeOperator == ".." then
@@ -2841,27 +2846,34 @@ end
 function CodeGenerator:compileFunctionDeclarationNode(node)
   local expression = node.Expression
   local fields     = node.Fields
+
+  -- `function <expression>.<field>[.<field>][:<field>](...)` style declaration
   if #fields > 0 then
     local closureRegister = self:allocateRegister()
     local lastField = fields[#fields]
     self:processFunction(node, closureRegister, lastField)
     local expressionRegister = self:processExpressionNode(expression)
     for index, field in ipairs(fields) do
-      local fieldRegister = self:allocateRegister()
-      -- OP_LOADK [A, Bx]    R(A) := Kst(Bx)
-      self:emitInstruction("LOADK", fieldRegister, self:findOrCreateConstant(field))
+      -- TODO: Do this without creating a fake AST node
+      -- (can't use self:findOrCreateConstant() here due to potential overflows)
+      local fieldConstantIndex = self:processConstantOrExpression({ TYPE = "String", Value = field })
+
+      -- Is the field the last one?
       if index == #fields then
         -- OP_SETTABLE [A, B, C]    R(A)[RK(B)] := RK(C)
-        self:emitInstruction("SETTABLE", expressionRegister, fieldRegister, closureRegister)
+        self:emitInstruction("SETTABLE", expressionRegister, fieldConstantIndex, closureRegister)
       else
         -- OP_GETTABLE [A, B, C]    R(A) := R(B)[RK(C)]
-        self:emitInstruction("GETTABLE", expressionRegister, expressionRegister, fieldRegister)
+        self:emitInstruction("GETTABLE", expressionRegister, expressionRegister, fieldConstantIndex)
       end
-      self:deallocateRegister(fieldRegister)
+
+      self:deallocateIfRegister(fieldConstantIndex)
     end
     self:deallocateRegisters({ closureRegister, expressionRegister })
     return
   end
+  -- `function variable(...)` style declaration
+
   local variableName = expression.Name
   if expression.VariableType == "Local" then
     local localRegister = self:findVariableRegister(variableName)
@@ -2893,6 +2905,7 @@ function CodeGenerator:compileLocalDeclarationNode(node)
       end
     end
   end
+
   for index, localName in ipairs(node.Variables) do
     local expressionRegister = variableExpressionRegisters[index]
     if not expressionRegister then
@@ -2927,7 +2940,7 @@ function CodeGenerator:compileNumericForLoopNode(node)
   self:processCodeBlock(codeblock)
   local loopEnd = #self.currentProto.code
   self:updateJumpInstruction(forprepInstructionIndex)
-  -- OP_FORLOOP [,A sBx]   R(A)+=R(A+2)
+  -- OP_FORLOOP [A, sBx]   R(A)+=R(A+2)
   --                       if R(A) <?= R(A+1) then { pc+=sBx R(A+3)=R(A) }
   self:emitInstruction("FORLOOP", startRegister, loopStart - loopEnd - 1)
   self:updateJumpInstructions(self.breakInstructions)
@@ -2979,6 +2992,7 @@ function CodeGenerator:compileReturnStatementNode(node)
   if self:isMultiretNode(lastExpression) then
     returnAmount = 0
   end
+
   -- OP_RETURN [A, B]    return R(A), ... ,R(A+B-2)
   self:emitInstruction("RETURN", startRegister, returnAmount, 0)
   self:deallocateRegisters(expressionRegisters) -- Deallocate return expression registers
@@ -3051,6 +3065,7 @@ end
 
 function CodeGenerator:compileVariableAssignmentNode(node)
   local expressionRegisters = self:processExpressionList(node.Expressions)
+
   for index, lvalue in ipairs(node.LValues) do
     local lvalueType = lvalue.TYPE
     if lvalueType == "Variable" then
@@ -3058,6 +3073,7 @@ function CodeGenerator:compileVariableAssignmentNode(node)
       local variableName = lvalue.Name
       local expressionRegister = expressionRegisters[index]
       if not expressionRegister then error("Expected an expression for assignment") end
+
       if variableType == "Local" then
         local variableRegister = self:findVariableRegister(variableName)
         -- OP_MOVE [A, B]    R(A) := R(B)
@@ -3070,13 +3086,15 @@ function CodeGenerator:compileVariableAssignmentNode(node)
         self:emitInstruction("SETGLOBAL", expressionRegister, self:findOrCreateConstant(variableName))
       end
     elseif lvalueType == "TableIndex" then
-      local indexRegister = self:processExpressionNode(lvalue.Index)
-      local tableExpressionRegister = self:processExpressionNode(lvalue.Expression)
+      local indexRegister           = self:processConstantOrExpression(lvalue.Index)
+      local tableExpressionRegister = self:processConstantOrExpression(lvalue.Expression)
       local expressionRegister = expressionRegisters[index]
       if not expressionRegister then error("Expected an expression for assignment") end
+
       -- OP_SETTABLE [A, B, C]    R(A)[RK(B)] := RK(C)
       self:emitInstruction("SETTABLE", tableExpressionRegister, indexRegister, expressionRegister)
-      self:deallocateRegisters({ indexRegister, tableExpressionRegister })
+      self:deallocateIfRegister(tableExpressionRegister)
+      self:deallocateIfRegister(indexRegister)
     else
       error("Unsupported lvalue type: " .. lvalueType)
     end
