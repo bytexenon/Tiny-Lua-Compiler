@@ -2,3 +2,5 @@
 .vscode
 *.log
 *.tmp
+*.out
+*.luac
