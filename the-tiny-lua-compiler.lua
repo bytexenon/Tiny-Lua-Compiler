@@ -6,7 +6,7 @@
 
   But this isn't just ANY compiler. Oh no. This is a Super Tiny
   compiler! So small, in fact, that if you strip away all these lovely
-  comments, it clocks in at around ~3000 lines of pure, sweet code.
+  comments, it clocks in at around ~4000 lines of pure, sweet code.
 
   Despite its size, this little guy is mighty! It's designed to
   tokenize, parse, and compile (most of!) the Lua 5.1 code you can
@@ -2998,6 +2998,8 @@ function CodeGenerator:processExpressionList(expressionList, expectedRegisters)
   local maxAllocatedRegisters = expectedRegisters or fixedCount
   for expressionIndex = 1, fixedCount do
     self:processExpressionNode(expressionList[expressionIndex])
+
+    -- Is the allocated register not needed?
     if expressionIndex > maxAllocatedRegisters then
       -- Not used, free the register.
       self:freeRegister()
@@ -3031,7 +3033,7 @@ function CodeGenerator:processExpressionList(expressionList, expectedRegisters)
   --       can return multiple results (multiret), so the amount of results
   --       is not fixed (or known) at compile time.
   --
-  --       `allocatedRegisters` is used to further free the correct amount
+  --       `allocatedRegisters` is used to later free the correct amount
   --       of registers allocated for this expression list.
   return allocatedRegisters, numResults
 end
@@ -3698,14 +3700,17 @@ function VirtualMachine:executeClosure(...)
     local opcode, a, b, c = instruction[1], instruction[2], instruction[3], instruction[4]
 
     -- OP_MOVE [A, B]    R(A) := R(B)
+    -- Copy a value between registers.
     if opcode == "MOVE" then
       stack[a] = stack[b]
 
     -- OP_LOADK [A, Bx]    R(A) = Kst(Bx)
+    -- Load a constant into a register.
     elseif opcode == "LOADK" then
       stack[a] = constants[-b]
 
     -- OP_LOADBOOL [A, B, C]    R(A) := (Bool)B; if (C) pc++
+    -- Load a boolean into a register.
     elseif opcode == "LOADBOOL" then
       stack[a] = (b == 1)
       if c == 1 then
@@ -3713,84 +3718,103 @@ function VirtualMachine:executeClosure(...)
       end
 
     -- OP_LOADNIL [A, B]    R(A) := ... := R(B) := nil
+    -- Load nil values into a range of registers.
     elseif opcode == "LOADNIL" then
       for reg = b, a, -1 do
         stack[reg] = nil
       end
 
     -- OP_GETUPVAL [A, B]    R(A) := UpValue[B]
+    -- Read an upvalue into a register.
     elseif opcode == "GETUPVAL" then
       local upvalue = upvalues[b + 1]
       stack[a] = upvalue.stack[upvalue.index]
 
     -- OP_GETGLOBAL [A, Bx]    R(A) := Gbl[Kst(Bx)]
+    -- Read a global variable into a register.
     elseif opcode == "GETGLOBAL" then
       stack[a] = env[constants[-b]]
 
     -- OP_GETTABLE [A, B, C]    R(A) := R(B)[RK(C)]
+    -- Read a table element into a register.
     elseif opcode == "GETTABLE" then
       stack[a] = stack[b][stack[c] or constants[-c]]
 
     -- OP_SETGLOBAL [A, Bx]    Gbl[Kst(Bx)] := R(A)
+    -- Write a register value into a global variable.
     elseif opcode == "SETGLOBAL" then
       env[stack[b] or constants[-b]] = stack[a]
 
     -- OP_SETUPVAL [A, B]    UpValue[B] := R(A)
+    -- Write a register value into an upvalue.
     elseif opcode == "SETUPVAL" then
       local upvalue = upvalues[b + 1]
       upvalue.stack[upvalue.index] = stack[a]
 
     -- OP_SETTABLE [A, B, C]    R(A)[R(B)] := R(C)
+    -- Write a register value into a table element.
     elseif opcode == "SETTABLE" then
       stack[a][stack[b] or constants[-b]] = stack[c] or constants[-c]
 
     -- OP_NEWTABLE [A, B, C]    R(A) := {} (size = B,C)
+    -- Create a new table and store it in a register.
     elseif opcode == "NEWTABLE" then
       stack[a] = {}
 
     -- OP_SELF [A, B, C]    R(A+1) := R(B) R(A) := R(B)[RK(C)]
+    -- Prepare an object method for calling.
     elseif opcode == "SELF" then
       local rb = stack[b]
       stack[a + 1] = rb
       stack[a] = rb[stack[c] or constants[-c]]
 
     -- OP_ADD [A, B, C]    R(A) := RK(B) + RK(C)
+    -- Add two values and store the result in a register.
     elseif opcode == "ADD" then
       stack[a] = (stack[b] or constants[-b]) + (stack[c] or constants[-c])
 
     -- OP_SUB [A, B, C]    R(A) := RK(B) - RK(C)
+    -- Subtract two values and store the result in a register.
     elseif opcode == "SUB" then
       stack[a] = (stack[b] or constants[-b]) - (stack[c] or constants[-c])
 
     -- OP_MUL [A, B, C]    R(A) := RK(B) * RK(C)
+    -- Multiply two values and store the result in a register.
     elseif opcode == "MUL" then
       stack[a] = (stack[b] or constants[-b]) * (stack[c] or constants[-c])
 
     -- OP_DIV [A, B, C]    R(A) := RK(B) / RK(C)
+    -- Divide two values and store the result in a register.
     elseif opcode == "DIV" then
       stack[a] = (stack[b] or constants[-b]) / (stack[c] or constants[-c])
 
     -- OP_MOD [A, B, C]    R(A) := RK(B) % RK(C)
+    -- Calculate the modulus of two values and store the result in a register.
     elseif opcode == "MOD" then
       stack[a] = (stack[b] or constants[-b]) % (stack[c] or constants[-c])
 
     -- OP_POW [A, B, C]    R(A) := RK(B) ^ RK(C)
+    -- Raise a value to the power of another and store the result in a register.
     elseif opcode == "POW" then
       stack[a] = (stack[b] or constants[-b]) ^ (stack[c] or constants[-c])
 
     -- OP_UNM [A, B]    R(A) := -R(B)
+    -- Negate a value and store the result in a register.
     elseif opcode == "UNM" then
       stack[a] = -stack[b]
 
     -- OP_NOT [A, B]    R(A) := not R(B)
+    -- Logical NOT of a value and store the result in a register.
     elseif opcode == "NOT" then
       stack[a] = not stack[b]
 
     -- OP_LEN [A, B]    R(A) := length of R(B)
+    -- Get the length of a value and store it in a register.
     elseif opcode == "LEN" then
       stack[a] = #stack[b]
 
     -- OP_CONCAT [A, B, C]    R(A) := R(B).. ... ..R(C)
+    -- Concatenate a range of registers and store the result in a register.
     elseif opcode == "CONCAT" then
       local values = {}
       for reg = b, c do
@@ -3799,34 +3823,40 @@ function VirtualMachine:executeClosure(...)
       stack[a] = table.concat(values)
 
     -- OP_JMP [A, sBx]    pc+=sBx
+    -- Jump to a new instruction offset.
     elseif opcode == "JMP" then
       pc = pc + b
 
     -- OP_EQ [A, B, C]    if ((RK(B) == RK(C)) ~= A) then pc++
+    -- Conditional jump based on equality.
     elseif opcode == "EQ" then
       if ((stack[b] or constants[-b]) == (stack[c] or constants[-c])) ~= (a == 1) then
         pc = pc + 1
       end
 
     -- OP_LT [A, B, C]    if ((RK(B) < RK(C)) ~= A) then pc++
+    -- Conditional jump based on less-than comparison.
     elseif opcode == "LT" then
       if ((stack[b] or constants[-b]) < (stack[c] or constants[-c])) ~= (a == 1) then
         pc = pc + 1
       end
 
     -- OP_LE [A, B, C]    if ((RK(B) <= RK(C)) ~= A) then pc++
+    -- Conditional jump based on less-than-or-equal comparison.
     elseif opcode == "LE" then
       if ((stack[b] or constants[-b]) <= (stack[c] or constants[-c])) ~= (a == 1) then
         pc = pc + 1
       end
 
     -- OP_TEST [A, C]    if not (R(A) <=> C) then pc++
+    -- Boolean test, with a conditional jump.
     elseif opcode == "TEST" then
       if not stack[a] == (c == 1) then
         pc = pc + 1
       end
 
     -- OP_TESTSET [A, B, C]    if (R(B) <=> C) then R(A) := R(B) else pc++
+    -- Boolean test, with conditional assignment and jump.
     elseif opcode == "TESTSET" then
       if not stack[a] == (c == 1) then
         stack[a] = stack[b]
@@ -3835,6 +3865,7 @@ function VirtualMachine:executeClosure(...)
       end
 
     -- OP_CALL [A, B, C]    R(A), ... ,R(A+C-2) := R(A)(R(A+1), ... ,R(A+B-1))
+    -- Call a closure (function) with arguments and handle returns.
     elseif opcode == "CALL" then
       local func = stack[a]
       local args = {}
@@ -3867,6 +3898,7 @@ function VirtualMachine:executeClosure(...)
       end
 
     -- OP_TAILCALL [A, B, C]    return R(A)(R(A+1), ... ,R(A+B-1))
+    -- Perform a tail call to a closure (function).
     elseif opcode == "TAILCALL" then
       local func = stack[a]
       local args = {}
@@ -3888,6 +3920,7 @@ function VirtualMachine:executeClosure(...)
       end
 
     -- OP_RETURN [A, B]    return R(A), ... ,R(A+B-2)
+    -- Return values from function call.
     elseif opcode == "RETURN" then
       local returns = {}
       if b == LUA_STACK_TOP then
@@ -3905,6 +3938,7 @@ function VirtualMachine:executeClosure(...)
 
     -- OP_FORLOOP [A, sBx]   R(A)+=R(A+2)
     --                       if R(A) <?= R(A+1) then { pc+=sBx R(A+3)=R(A) }
+    -- Iterate a numeric for loop.
     elseif opcode == "FORLOOP" then
       local step  = stack[a + 2]
       local idx   = stack[a] + step
@@ -3916,6 +3950,7 @@ function VirtualMachine:executeClosure(...)
       end
 
     -- OP_FORPREP [A, sBx]    R(A)-=R(A+2) pc+=sBx
+    -- Initialize a numeric for loop.
     elseif opcode == "FORPREP" then
       local init = stack[a]
       local plimit = stack[a + 1]
@@ -3933,6 +3968,7 @@ function VirtualMachine:executeClosure(...)
 
     -- OP_TFORLOOP [A, C]    R(A+3), ... ,R(A+2+C) := R(A)(R(A+1), R(A+2))
     --                       if R(A+3) ~= nil then R(A+2)=R(A+3) else pc++
+    -- Iterate a generic for loop.
     elseif opcode == "TFORLOOP" then
       local cb = a + 3
 
@@ -3962,6 +3998,7 @@ function VirtualMachine:executeClosure(...)
       end
 
     -- OP_SETLIST [A, B, C]    R(A)[(C-1)*FPF+i] := R(A+i), 1 <= i <= B
+    -- Set a range of array elements in a table.
     elseif opcode == "SETLIST" then
       local n = b
       if n == LUA_STACK_TOP then
@@ -3983,10 +4020,12 @@ function VirtualMachine:executeClosure(...)
       -- Stub. No implementation needed for this VM.
 
     -- OP_CLOSURE [A, Bx]    R(A) := closure(KPROTO[Bx], R(A), ... ,R(A+n))
+    -- Create a new closure (function) and store it in a register.
     elseif opcode == "CLOSURE" then
       local tProto = proto.protos[b + 1]
       local tProtoUpvalues = {}
 
+      -- Capture upvalues for the new closure.
       for _ = 1, #tProto.upvalues do
         pc = pc + 1
         local instr = code[pc]
@@ -4023,6 +4062,7 @@ function VirtualMachine:executeClosure(...)
       end
 
     -- OP_VARARG [A, B]    R(A), R(A+1), ..., R(A+B-1) = vararg
+    -- Load vararg function arguments into registers.
     elseif opcode == "VARARG" then
       local varargCount = #vararg
       if b == LUA_STACK_TOP then
@@ -4039,6 +4079,7 @@ function VirtualMachine:executeClosure(...)
       error("Unimplemented instruction: " .. tostring(opcode))
     end
 
+    -- Advance to the next instruction.
     pc = pc + 1
   end
 
