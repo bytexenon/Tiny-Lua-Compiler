@@ -2376,7 +2376,7 @@ function CodeGenerator:setRegisterValue(node, copyFromRegister)
     local baseRegister  = self:processConstantOrExpression(baseNode)
     local indexRegister = self:processConstantOrExpression(indexNode)
 
-    -- OP_SETTABLE [A, B, C]    R(A)[R(B)] := R(C)
+    -- OP_SETTABLE [A, B, C]    R(A)[RK(B)] := RK(C)
     self:emitInstruction("SETTABLE", baseRegister, indexRegister, copyFromRegister)
     self:freeIfRegister(baseRegister)
     self:freeIfRegister(indexRegister)
@@ -2974,13 +2974,13 @@ end
 
 -- Processes a list of expressions and returns:
 --
---  allocatedRegisters - The total number of registers allocated for the
---                       expression list.
+--  allocatedRegisterCount - The total number of registers allocated for the
+--                           expression list.
 --
---  numResults         - The number of results produced by the
---                       expression list. If -1, indicates that the last
---                       expression can return multiple results (multiret).
---                       Used for "B" operand in CALL/RETURN instructions.
+--  numResults             - The number of results produced by the
+--                           expression list. If -1, indicates that the last
+--                           expression can return multiple results (multiret).
+--                           Used for "B" operand in CALL/RETURN instructions.
 --
 -- Sigh.
 function CodeGenerator:processExpressionList(expressionList, expectedRegisters)
@@ -3766,6 +3766,7 @@ function VirtualMachine:executeClosure(...)
 
     -- OP_NEWTABLE [A, B, C]    R(A) := {} (size = B,C)
     -- Create a new table and store it in a register.
+    -- B = array part size hint, C = hash part size hint (ignored here).
     elseif opcode == "NEWTABLE" then
       stack[a] = {}
 
@@ -3828,6 +3829,8 @@ function VirtualMachine:executeClosure(...)
       for reg = b, c do
         table.insert(values, stack[reg])
       end
+
+      -- Optimization: use table.concat for efficient string concatenation.
       stack[a] = table.concat(values)
 
     -- OP_JMP [A, sBx]    pc+=sBx
@@ -4042,6 +4045,8 @@ function VirtualMachine:executeClosure(...)
       local tProtoUpvalues = {}
 
       -- Capture upvalues for the new closure.
+      -- These are pseudo-instructions, and we need to skip
+      -- over them while processing the CLOSURE instruction.
       for _ = 1, #tProto.upvalues do
         pc = pc + 1
         local instr = code[pc]
@@ -4069,6 +4074,25 @@ function VirtualMachine:executeClosure(...)
         upvalues  = tProtoUpvalues,
       }
 
+      -- NOTE:
+      --  In a standard Lua VM, CLOSURE would allocate a proper CClosure or
+      --  LClosure structure (see lvm.c, lfunc.c, lobject.h in Lua 5.1 source).
+      --  These structures hold a reference to the function prototype, an array of
+      --  upvalue pointers, and runtime state like the environment.
+      --
+      --  TLC simplifies this by wrapping the closure in a native Lua function.
+      --
+      --  Why this design? First, it provides seamless interoperability, allowing
+      --  TLC-compiled functions to be passed to native Lua APIs like table.foreach
+      --  or pcall without reimplementing the entire standard library. Second, it
+      --  dramatically simplifies the implementation by avoiding the need for
+      --  CallInfo frames, stack bases, and complex upvalue management with open
+      --  and closed upvalue lists.
+      --
+      --  The trade-off is that we lose some fidelity compared to a real Lua VM.
+      --  We don't have proper function identity tracking, and debug hooks are
+      --  harder to implement. However, we gain a working VM in roughly 500 lines
+      --  of code.
       stack[a] = function(...)
         self:pushClosure(tClosure)
         local returns = { self:executeClosure(...) }
