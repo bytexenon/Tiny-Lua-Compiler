@@ -2011,7 +2011,7 @@ function CodeGenerator.new(ast)
   self.currentScope = nil
   self.stackSize    = 0
 
-  self.breakControlList = nil
+  self.breakJumpPCs = {}
 
   return self
 end
@@ -2043,24 +2043,27 @@ function CodeGenerator:leaveScope()
   local scopes       = self.scopes
   if not currentScope then
     error("Compiler: No scope to leave!")
-  elseif currentScope.isFunction then
-    -- Mess.
-    if self.stackSize ~= 0 then
-      local variableCount = 0
-      for _ in pairs(currentScope.locals) do
-        variableCount = variableCount + 1
-      end
 
-      if self.stackSize > variableCount then
-        error(
-          string.format(
-            "Compiler: Register leak detected when leaving function scope! "
-            .. "Expected at most %d registers in use, but found %d.",
-            variableCount,
-            self.stackSize
-          )
+  -- Check for register leaks when leaving a function scope.
+  elseif currentScope.isFunction and self.stackSize ~= 0 then
+    -- Since all permanent registers are local variables, we can count
+    -- how many local variables are declared in this scope to determine
+    -- how many registers should be in use at most.
+
+    local variableCount = 0
+    for _ in pairs(currentScope.locals) do
+      variableCount = variableCount + 1
+    end
+
+    if self.stackSize > variableCount then
+      error(
+        string.format(
+          "Compiler: Register leak detected when leaving function scope! "
+          .. "Expected at most %d registers in use, but found %d.",
+          variableCount,
+          self.stackSize
         )
-      end
+      )
     end
   end
 
@@ -2158,15 +2161,6 @@ function CodeGenerator:allocateRegisters(count)
   end
 end
 
-function CodeGenerator:freeRegister()
-  local stackSize = self.stackSize
-  if stackSize < 0 then
-    error("Compiler: Stack underflow! cannot free below minimum of 0 registers.")
-  end
-
-  self.stackSize = stackSize - 1
-end
-
 function CodeGenerator:freeRegisters(count)
   if count <= 0 then return end -- Just ignore non-positive counts.
 
@@ -2182,7 +2176,7 @@ end
 function CodeGenerator:freeIfRegister(rkOperand)
   -- Is it a register?
   if rkOperand >= 0 then
-    self:freeRegister()
+    self:freeRegisters(1)
   end
 
   -- If it's below 0, it's a constant index, do nothing.
@@ -2220,15 +2214,7 @@ function CodeGenerator:findOrCreateUpvalue(varName)
   return upvalueIndex
 end
 
---// Instruction/Label Management //--
-
--- TODO: The label/jump logic is a bit messy, and it cannot be used
---       in most places, is there a better way to mark jumps and their
---       locations?
-
-function CodeGenerator:makeLabel()
-  return { jumps = {} }
-end
+--// Instruction Management //--
 
 function CodeGenerator:emitInstruction(opname, a, b, c)
   local instruction = { opname, a, b, c or 0 }
@@ -2236,63 +2222,57 @@ function CodeGenerator:emitInstruction(opname, a, b, c)
   return instruction
 end
 
-function CodeGenerator:emitJump(label)
-  local instruction = { "JMP", 0, 0, 0}
-  table.insert(self.proto.code, instruction)
+function CodeGenerator:emitJump()
+  self:emitInstruction("JMP", 0, 1, 0)
   local instructionIndex = #self.proto.code
-
-  return table.insert(label.jumps, { instruction, instructionIndex })
+  return instructionIndex
 end
 
-function CodeGenerator:patchLabelJumpsToHere(label)
-  local currentPC = #self.proto.code
-  for _, jump in ipairs(label.jumps) do
-    local instruction      = jump[1]
-    local instructionIndex = jump[2]
-    instruction[3] = currentPC - instructionIndex
+function CodeGenerator:emitJumpBack(toPC)
+  local currentPC = #self.proto.code + 1
+  local offset    = toPC - currentPC
+  self:emitInstruction("JMP", 0, offset, 0)
+end
+
+function CodeGenerator:patchJump(fromPC, toPC)
+  local instruction = self.proto.code[fromPC]
+  if not instruction then
+    error("Compiler: Invalid 'fromPC' for jump patching: " .. tostring(fromPC))
+  end
+
+  local offset = toPC - (fromPC + 1)
+  instruction[3] = offset
+end
+
+function CodeGenerator:patchJumpToHere(fromPC)
+  local currentPC = #self.proto.code + 1
+  self:patchJump(fromPC, currentPC)
+end
+
+function CodeGenerator:patchJumpsToHere(jumpPCs)
+  for _, pc in ipairs(jumpPCs) do
+    self:patchJumpToHere(pc)
   end
 end
 
 function CodeGenerator:patchBreakJumpsToHere()
-  if not self.breakControlList then return end
-
-  local currentPC = #self.proto.code
-  for _, breakTable in ipairs(self.breakControlList) do
-    local instruction = breakTable.instruction
-    local index       = breakTable.index
-    instruction[3] = currentPC - index
-  end
-
-  self.breakControlList = nil
+  if not self.breakJumpPCs then return end
+  self:patchJumpsToHere(self.breakJumpPCs)
+  self.breakJumpPCs = nil
 end
 
 --// Wrappers //--
-function CodeGenerator:withTemporaryRegister(callback)
-  local register = self:allocateRegister()
-  local result   = callback(register)
-  self:freeRegister()
-  return result
-end
-
-function CodeGenerator:withTwoTemporaryRegisters(callback)
-  local firstRegister  = self:allocateRegister()
-  local secondRegister = self:allocateRegister()
-  local result         = callback(firstRegister, secondRegister)
-  self:freeRegisters(2)
-  return result
-end
-
 function CodeGenerator:breakable(callback)
-  local previousBreakControlList = self.breakControlList
-  self.breakControlList = {}
+  local previousBreakJumpPCs = self.breakJumpPCs
+  self.breakJumpPCs = {}
 
   callback()
   self:patchBreakJumpsToHere()
 
-  local breakControlList = self.breakControlList
-  self.breakControlList = previousBreakControlList
+  local breakJumpPCs = self.breakJumpPCs
+  self.breakJumpPCs = previousBreakJumpPCs
 
-  return breakControlList
+  return breakJumpPCs
 end
 
 --// Auxiliary/Helper Methods //--
@@ -2369,8 +2349,7 @@ function CodeGenerator:setRegisterValue(node, copyFromRegister)
     end
     return
   elseif nodeType == "IndexExpression" then
-    -- self:withTwoTemporaryRegisters(function(baseRegister, indexRegister)
-    local baseNode = node.Base
+    local baseNode  = node.Base
     local indexNode = node.Index
 
     local baseRegister  = self:processConstantOrExpression(baseNode)
@@ -2381,7 +2360,6 @@ function CodeGenerator:setRegisterValue(node, copyFromRegister)
     self:freeIfRegister(baseRegister)
     self:freeIfRegister(indexRegister)
 
-    -- end)
     return
   end
 
@@ -2419,16 +2397,16 @@ function CodeGenerator:processTablePage(
     self:processExpressionNode(elementValue, nil, returnCount)
   end
 
-  local currentPageRegisters = endIndex - startIndex + 1
-  local currentPageResults   = currentPageRegisters
+  local pageRegisterCount = endIndex - startIndex + 1
+  local pageResults       = pageRegisterCount
   if isLastElemImplicit and isLastPage and isLastElementMultiRet then
     -- B = 0: Doesn't have a fixed amount of keys (multiret)
-    currentPageResults = 0
+    pageResults = 0
   end
 
   -- OP_SETLIST [A, B, C]    R(A)[(C-1)*FPF+i] := R(A+i), 1 <= i <= B
-  self:emitInstruction("SETLIST", register, currentPageResults, page)
-  self:freeRegisters(currentPageRegisters)
+  self:emitInstruction("SETLIST", register, pageResults, page)
+  self:freeRegisters(pageRegisterCount)
 end
 
 --// Expression Handlers //--
@@ -2472,11 +2450,6 @@ function CodeGenerator:processBinaryOperator(node, register)
   if self.CONFIG.ARITHMETIC_OPERATOR_LOOKUP[operator] then
     local opcode = self.CONFIG.ARITHMETIC_OPERATOR_LOOKUP[operator]
 
-    -- NOTE: Do not move `self:processExpressionNode(left, register)` into
-    -- `self:withTemporaryRegister` as it would cause register allocation issues.
-    -- (For example, if left expression is a function call, it might use more than
-    -- one register, which would make it allocate more registers AFTER the temporary register
-    -- which shouldn't happen, the simple solution is to move it out of the temporary register scope.)
     local rightOperand = self:processConstantOrExpression(left, register)
     local leftOperand  = self:processConstantOrExpression(right)
     self:emitInstruction(opcode, register, rightOperand, leftOperand)
@@ -2491,39 +2464,37 @@ function CodeGenerator:processBinaryOperator(node, register)
     self:processExpressionNode(left, register)
     local isConditionTrue = (operator == "and" and 0) or 1
     self:emitInstruction("TEST", register, 0, isConditionTrue)
-    local label = self:makeLabel()
-    self:emitJump(label)
+    local jumpPC = self:emitJump()
     self:processExpressionNode(right, register)
-    self:patchLabelJumpsToHere(label)
+    self:patchJumpToHere(jumpPC)
 
     return register
 
   -- Comparison operators (==, ~=, <, >, <=, >=)
   elseif self.CONFIG.COMPARISON_INSTRUCTION_LOOKUP[operator] then
-    local leftReg = self:processExpressionNode(left, register)
-    self:withTemporaryRegister(function(tempRegister)
-      local rightReg     = self:processExpressionNode(right, tempRegister)
-      local nodeOperator = self.CONFIG.COMPARISON_INSTRUCTION_LOOKUP[operator]
-      local instruction, flag = nodeOperator[1], nodeOperator[2]
+    local leftReg      = self:processConstantOrExpression(left, register)
+    local rightReg     = self:processConstantOrExpression(right)
+    local nodeOperator = self.CONFIG.COMPARISON_INSTRUCTION_LOOKUP[operator]
+    local instruction, flag = nodeOperator[1], nodeOperator[2]
 
-      local flip = (operator == ">" or operator == ">=")
-      local b, c = leftReg, rightReg
-      if flip then b, c = rightReg, leftReg end
+    local flip = (operator == ">" or operator == ">=")
+    local b, c = leftReg, rightReg
+    if flip then b, c = rightReg, leftReg end
 
-      self:emitInstruction(instruction, flag, b, c)
-      self:emitInstruction("JMP", 0, 1)
+    self:emitInstruction(instruction, flag, b, c)
+    self:emitInstruction("JMP", 0, 1)
 
-      -- OP_LOADBOOL [A, B, C]    R(A) := (Bool)B; if (C) pc++
-      self:emitInstruction("LOADBOOL", register, 0, 1)
-      self:emitInstruction("LOADBOOL", register, 1, 0)
-    end)
+    -- OP_LOADBOOL [A, B, C]    R(A) := (Bool)B; if (C) pc++
+    self:emitInstruction("LOADBOOL", register, 0, 1)
+    self:emitInstruction("LOADBOOL", register, 1, 0)
+
+    -- Don't deallocate `leftReg` as it is `register`.
+    self:freeIfRegister(rightReg)
 
     return register
 
   -- String concatenation (..)
   elseif operator == ".." then
-    -- NOTE: Do not wrap these two calls in `withTemporaryRegister`,
-    -- as it would cause register allocation issues (see the comment above).
     local leftRegister  = self:processExpressionNode(left)
     local rightRegister = self:processExpressionNode(right)
 
@@ -2564,15 +2535,12 @@ function CodeGenerator:processTableConstructor(node, register)
   self:emitInstruction("NEWTABLE", register, sizeB, sizeC)
 
   for _, elem in ipairs(explicitElems) do
-    -- self:withTwoTemporaryRegisters(function(keyRegister, valueRegister)
-    -- NOTE: Do not use `withTwoTemporaryRegisters` here.
     local keyRegister   = self:processExpressionNode(elem.Key)
     local valueRegister = self:processExpressionNode(elem.Value)
 
     -- OP_SETTABLE [A, B, C]    R(A)[R(B)] := R(C)
     self:emitInstruction("SETTABLE", register, keyRegister, valueRegister)
     self:freeRegisters(2)
-    -- end)
   end
 
   local pageAmount = math.ceil(#implicitElems / self.CONFIG.SETLIST_MAX)
@@ -2623,23 +2591,23 @@ function CodeGenerator:processFunctionCall(node, register, resultRegisters)
     local calleeExpressionBase  = callee.Base
 
     self:processExpressionNode(calleeExpressionBase, register)
-    self:allocateRegister() -- Use for `self` arg, will get free'd later.
+    self:allocateRegister() -- Used for `self` arg, will get free'd later.
 
-    self:withTemporaryRegister(function(calleeIndexRegister)
-      calleeIndexRegister = self:processConstantOrExpression(calleeExpressionIndex, calleeIndexRegister)
+    local calleeIndexRegister = self:processConstantOrExpression(calleeExpressionIndex)
 
-      -- OP_SELF [A, B, C]    R(A+1) := R(B) R(A) := R(B)[RK(C)]
-      self:emitInstruction("SELF", register, register, calleeIndexRegister)
-    end)
+    -- OP_SELF [A, B, C]    R(A+1) := R(B) R(A) := R(B)[RK(C)]
+    self:emitInstruction("SELF", register, register, calleeIndexRegister)
+
+    self:freeIfRegister(calleeIndexRegister)
   else
     self:processExpressionNode(callee, register)
   end
 
-  local argRegisters, numArgs = self:processExpressionList(arguments)
+  local argumentRegisterCount, numArgs = self:processExpressionList(arguments)
   local isArgsMultiRet = self:isMultiReturnList(arguments)
   if isMethodCall then
     -- Make sure the `CALL` instruction captures the "self" (table) param.
-    argRegisters = argRegisters + 1
+    argumentRegisterCount = argumentRegisterCount + 1
     if not isArgsMultiRet then
       -- Check if it's not multiret, as multiret already includes all args.
       -- Increasing it by one would turn multiret (-1 + 1 = 0) into a fixed count (0 + 1 = 1)
@@ -2652,7 +2620,7 @@ function CodeGenerator:processFunctionCall(node, register, resultRegisters)
 
   -- OP_CALL [A, B, C]    R(A), ... ,R(A+C-2) := R(A)(R(A+1), ... ,R(A+B-1))
   self:emitInstruction("CALL", register, numArgs + 1, returnValueCount)
-  self:freeRegisters(argRegisters)
+  self:freeRegisters(argumentRegisterCount)
   self:allocateRegisters(returnValueCount - 2) -- One register is already in 'register'
 
   if resultRegisters then
@@ -2691,7 +2659,7 @@ end
 --// Statement Handlers //--
 function CodeGenerator:processCallStatement(node)
   self:processFunctionCall(node.Expression, self:allocateRegister(), 0)
-  self:freeRegister() -- We shouldn't have allocated registers in statements.
+  self:freeRegisters(1) -- We shouldn't have allocated registers in statements.
 end
 
 function CodeGenerator:processDoStatement(node)
@@ -2699,14 +2667,11 @@ function CodeGenerator:processDoStatement(node)
 end
 
 function CodeGenerator:processBreakStatement(_)
-  if not self.breakControlList then
+  if not self.breakJumpPCs then
     error("Compiler: no loop to break")
   end
 
-  table.insert(self.breakControlList, {
-    instruction = self:emitInstruction("JMP", 0, 0, 0),
-    index       = #self.proto.code
-  })
+  table.insert(self.breakJumpPCs, self:emitJump())
 end
 
 function CodeGenerator:processLocalDeclarationStatement(node)
@@ -2735,23 +2700,23 @@ function CodeGenerator:processAssignmentStatement(node)
   local expressions = node.Expressions
 
   local variableBaseRegister = self.stackSize - 1
-  local lvalueRegisters = self:processExpressionList(expressions, #lvalues)
+  local lvalueRegisterCount = self:processExpressionList(expressions, #lvalues)
 
   for index, lvalue in ipairs(lvalues) do
     local lvalueRegister = variableBaseRegister + index
     self:setRegisterValue(lvalue, lvalueRegister)
   end
 
-  self:freeRegisters(lvalueRegisters)
+  self:freeRegisters(lvalueRegisterCount)
 end
 
 function CodeGenerator:processIfStatement(node)
   local clauses    = node.Clauses
   local elseClause = node.ElseClause
 
-  local jumpToEndLabels = {}
-  local previousLabel   = nil
-  local lastClause      = clauses[#clauses]
+  local jumpToEndPCs   = {}
+  local lastClause     = clauses[#clauses]
+  local previousJumpPC = nil
 
   for _, clause in ipairs(clauses) do
     local condition = clause.Condition
@@ -2759,28 +2724,24 @@ function CodeGenerator:processIfStatement(node)
 
     local conditionRegister = self:processExpressionNode(condition)
     self:emitInstruction("TEST", conditionRegister, 0, 0)
-    self:freeRegister() -- Free conditionRegister
+    self:freeRegisters(1) -- Free conditionRegister
 
-    previousLabel = self:makeLabel()
-    self:emitJump(previousLabel)
+    previousJumpPC = self:emitJump()
     self:processBlockNode(body)
 
     local isLastClause = (clause == lastClause)
     if not isLastClause or elseClause then
-      local jumpToEndLabel = self:makeLabel()
-      self:emitJump(jumpToEndLabel)
-      table.insert(jumpToEndLabels, jumpToEndLabel)
+      local jumpToEndPC = self:emitJump()
+      table.insert(jumpToEndPCs, jumpToEndPC)
     end
-    self:patchLabelJumpsToHere(previousLabel)
+    self:patchJumpToHere(previousJumpPC)
   end
 
   if elseClause then
     self:processBlockNode(elseClause)
   end
 
-  for _, v in ipairs(jumpToEndLabels) do
-    self:patchLabelJumpsToHere(v)
-  end
+  self:patchJumpsToHere(jumpToEndPCs)
 end
 
 function CodeGenerator:processForGenericStatement(node)
@@ -2792,18 +2753,16 @@ function CodeGenerator:processForGenericStatement(node)
   local expressionRegisters = self:processExpressionList(expressions, 3)
   self:declareLocalVariables(iterators)
 
-  local startJmpInstruction = self:emitInstruction("JMP", 0, 0)
-  local loopStart = #self.proto.code
+  local startJmpInstruction = self:emitJump()
+  local loopStartPC = #self.proto.code
   self:breakable(function()
     self:processBlockNode(body)
-    startJmpInstruction[3] = #self.proto.code - loopStart
+    self:patchJumpToHere(startJmpInstruction)
 
     -- OP_TFORLOOP [A, C]    R(A+3), ... ,R(A+2+C) := R(A)(R(A+1), R(A+2))
     --                       if R(A+3) ~= nil then R(A+2)=R(A+3) else pc++
     self:emitInstruction("TFORLOOP", baseStackSize, 0, #iterators)
-
-    -- OP_JMP [A, sBx]    pc+=sBx
-    self:emitInstruction("JMP", 0, loopStart - #self.proto.code - 1)
+    self:emitJumpBack(loopStartPC)
   end)
   self:undeclareVariables(iterators)
   self:freeRegisters(#iterators + expressionRegisters)
@@ -2818,7 +2777,7 @@ function CodeGenerator:processForNumericStatement(node)
 
   local startRegister = self:processExpressionNode(startExpr)
   self:processExpressionNode(endExpr)
-  local stepRegister  = self:allocateRegister()
+  local stepRegister = self:allocateRegister()
   if stepExpr then
     self:processExpressionNode(stepExpr, stepRegister)
   else
@@ -2828,17 +2787,17 @@ function CodeGenerator:processForNumericStatement(node)
 
   -- OP_FORPREP [A, sBx]    R(A)-=R(A+2) pc+=sBx
   local forPrepInstruction = self:emitInstruction("FORPREP", startRegister, 0)
-  local loopStart = #self.proto.code
+  local loopStartPC = #self.proto.code
   self:declareLocalVariable(varName, startRegister)
   self:breakable(function()
     self:processBlockNode(body)
 
-    local loopEnd = #self.proto.code
-    forPrepInstruction[3] = #self.proto.code - loopStart
+    local loopEndPC = #self.proto.code
+    forPrepInstruction[3] = loopEndPC - loopStartPC
 
     -- OP_FORLOOP [A, sBx]   R(A)+=R(A+2)
     --                       if R(A) <?= R(A+1) then { pc+=sBx R(A+3)=R(A) }
-    self:emitInstruction("FORLOOP", startRegister, loopStart - loopEnd - 1)
+    self:emitInstruction("FORLOOP", startRegister, loopStartPC - loopEndPC - 1)
   end)
   self:freeRegisters(3) -- Free startRegister, endRegister, stepRegister
   self:undeclareVariable(varName)
@@ -2851,34 +2810,31 @@ function CodeGenerator:processWhileStatement(node)
   local startPC = #self.proto.code
   local conditionRegister = self:processExpressionNode(condition)
   self:emitInstruction("TEST", conditionRegister, 0, 0)
-  self:freeRegister() -- The condition register is not needed anymore.
+  self:freeRegisters(1) -- The condition register is not needed anymore.
 
-  local endLabel = self:makeLabel()
-  self:emitJump(endLabel)
+  local endJumpPC = self:emitJump()
   self:breakable(function()
     self:processBlockNode(body)
-    self:emitInstruction("JMP", 0, startPC - #self.proto.code - 1)
+    self:emitJumpBack(startPC)
   end)
-  self:patchLabelJumpsToHere(endLabel)
+  self:patchJumpToHere(endJumpPC)
 end
 
 function CodeGenerator:processRepeatStatement(node)
   local body      = node.Body
   local condition = node.Condition
-  local loopStart = #self.proto.code
+  local loopStartPC = #self.proto.code
 
   -- NOTE: Repeat statements' body and condition are in the same scope.
   self:enterScope()
   self:breakable(function()
     self:processStatementList(body.Statements)
-    self:withTemporaryRegister(function(conditionRegister)
-      self:processExpressionNode(condition, conditionRegister)
+    local conditionRegister = self:processExpressionNode(condition)
 
-      -- OP_TEST [A, C]    if not (R(A) <=> C) then pc++
-      self:emitInstruction("TEST", conditionRegister, 0, 0)
-      -- OP_JMP [A, sBx]    pc+=sBx
-      self:emitInstruction("JMP", 0, loopStart - #self.proto.code - 1)
-    end)
+    -- OP_TEST [A, C]    if not (R(A) <=> C) then pc++
+    self:emitInstruction("TEST", conditionRegister, 0, 0)
+    self:emitJumpBack(loopStartPC)
+    self:freeRegisters(1) -- The condition register is not needed anymore.
   end)
   self:leaveScope()
 end
@@ -2889,24 +2845,23 @@ function CodeGenerator:processReturnStatement(node)
   local lastExpression = expressions[#expressions]
   local isTailcall     = self:isTailCall(expressions)
 
-  local numResults, exprRegisters
+  local numResults, exprRegisterCount
   if isTailcall then
-    self:withTemporaryRegister(function(tempRegister)
-      -- Move the function call result to the correct register.
-      self:processFunctionCall(
-        lastExpression,
-        tempRegister,
-        -1
-      )
+    self:processFunctionCall(
+      lastExpression,
+      self:allocateRegister(),
+      -1
+    )
 
-      -- OP_TAILCALL [A, B, C]    return R(A)(R(A+1), ... ,R(A+B-1))
-      local callInstruction = self.proto.code[#self.proto.code]
-      callInstruction[1] = "TAILCALL" -- Change CALL to TAILCALL
-      numResults         = -1         -- -1 = MULTIRET (all results)
-    end)
+    -- OP_TAILCALL [A, B, C]    return R(A)(R(A+1), ... ,R(A+B-1))
+    local callInstruction = self.proto.code[#self.proto.code]
+    callInstruction[1] = "TAILCALL" -- Change CALL to TAILCALL
+    numResults         = -1         -- -1 = MULTIRET (all results)
+
+    self:freeRegisters(1) -- Free the temp register used for the call.
   else
-    exprRegisters, numResults = self:processExpressionList(expressions)
-    self:freeRegisters(exprRegisters)
+    exprRegisterCount, numResults = self:processExpressionList(expressions)
+    self:freeRegisters(exprRegisterCount)
   end
 
   -- OP_RETURN [A, B]    return R(A), ... ,R(A+B-2)
@@ -2954,7 +2909,6 @@ end
 
 -- Used for RK() operands (Register or Konstant).
 -- If it's a register it has to get free'd later.
--- TODO: Find a better way to deallocate RK-type operands.
 function CodeGenerator:processConstantOrExpression(node, register)
   local nodeType = node.TYPE
 
@@ -2982,7 +2936,6 @@ end
 --                           expression can return multiple results (multiret).
 --                           Used for "B" operand in CALL/RETURN instructions.
 --
--- Sigh.
 function CodeGenerator:processExpressionList(expressionList, expectedRegisters)
   if #expressionList == 0 and not expectedRegisters then
     return 0, 0
@@ -3002,7 +2955,7 @@ function CodeGenerator:processExpressionList(expressionList, expectedRegisters)
     -- Is the allocated register not needed?
     if expressionIndex > maxAllocatedRegisters then
       -- Not used, free the register.
-      self:freeRegister()
+      self:freeRegisters(1)
     end
   end
 
@@ -3026,8 +2979,8 @@ function CodeGenerator:processExpressionList(expressionList, expectedRegisters)
     )
   end
 
-  local allocatedRegisters = expectedRegisters or #expressionList
-  local numResults = (isMultiret and -1) or allocatedRegisters
+  local allocatedRegisterCount = expectedRegisters or #expressionList
+  local numResults = (isMultiret and -1) or allocatedRegisterCount
 
   -- NOTE: if `numResults` is -1, it indicates that the last expression
   --       can return multiple results (multiret), so the amount of results
@@ -3035,7 +2988,7 @@ function CodeGenerator:processExpressionList(expressionList, expectedRegisters)
   --
   --       `allocatedRegisters` is used to later free the correct amount
   --       of registers allocated for this expression list.
-  return allocatedRegisters, numResults
+  return allocatedRegisterCount, numResults
 end
 
 function CodeGenerator:processStatementList(statementList)
