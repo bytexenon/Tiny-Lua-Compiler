@@ -2684,7 +2684,7 @@ function CodeGenerator:processVarargExpression(_, register, resultRegisters)
   local varargCount = (resultRegisters or 1) + 1
   -- OP_VARARG [A, B]    R(A), R(A+1), ..., R(A+B-1) = vararg
   self:emitInstruction("VARARG", register, varargCount)
-  self:allocateRegisters(varargCount - 1) -- One register is already in 'register'
+  self:allocateRegisters(varargCount - 2) -- One register is already in 'register'
   return register
 end
 
