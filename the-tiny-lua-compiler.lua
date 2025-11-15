@@ -3042,13 +3042,25 @@ function CodeGenerator:processStatementList(statementList)
   end
 end
 
-function CodeGenerator:processBlockNode(blockNode, variables, isFunction)
-  self:enterScope(isFunction)
-  if variables then
-    -- Declare variables while in the scope.
-    self:declareLocalVariables(variables)
-  end
+function CodeGenerator:processBlockNode(blockNode)
+  self:enterScope()
   self:processStatementList(blockNode.Statements)
+  self:leaveScope()
+end
+
+function CodeGenerator:processFunctionBody(node)
+  self:enterScope(true)
+  for _, paramName in ipairs(node.Parameters) do
+    self:declareLocalVariable(paramName)
+  end
+
+  if node.IsVararg then
+    -- Declare implicit "arg" variable to hold vararg values.
+    self:declareLocalVariable("arg")
+  end
+
+  self:processStatementList(node.Body.Statements)
+  self:emitInstruction("RETURN", 0, 1, 0) -- Default return statement
   self:leaveScope()
 end
 
@@ -3064,8 +3076,7 @@ function CodeGenerator:processFunction(functionNode, closureRegister)
     numParams = #functionNode.Parameters,
   })
   self.proto = childProto
-  self:processBlockNode(functionNode.Body, functionNode.Parameters, true)
-  self:emitInstruction("RETURN", 0, 1, 0) -- Default return statement
+  self:processFunctionBody(functionNode)
   self.proto = parentProto
 
   if closureRegister then
