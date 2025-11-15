@@ -3674,6 +3674,14 @@ function VirtualMachine:executeClosure(...)
   local maxStackSize = proto.maxStackSize
   local top = maxStackSize
 
+  -- Gets a value from either the stack or constants table.
+  -- NOTE: Constant indices are represented as negative numbers
+  -- in our implementation, so in order to get the correct constant,
+  -- we negate the index when accessing the constants table.
+  local function rk(index)
+    return stack[index] or constants[-index]
+  end
+
   -- Initialize parameters.
   local vararg
   local params = { ... }
@@ -3720,7 +3728,7 @@ function VirtualMachine:executeClosure(...)
     -- OP_LOADNIL [A, B]    R(A) := ... := R(B) := nil
     -- Load nil values into a range of registers.
     elseif opcode == "LOADNIL" then
-      for reg = b, a, -1 do
+      for reg = a, b do
         stack[reg] = nil
       end
 
@@ -3738,12 +3746,12 @@ function VirtualMachine:executeClosure(...)
     -- OP_GETTABLE [A, B, C]    R(A) := R(B)[RK(C)]
     -- Read a table element into a register.
     elseif opcode == "GETTABLE" then
-      stack[a] = stack[b][stack[c] or constants[-c]]
+      stack[a] = stack[b][rk(c)]
 
     -- OP_SETGLOBAL [A, Bx]    Gbl[Kst(Bx)] := R(A)
     -- Write a register value into a global variable.
     elseif opcode == "SETGLOBAL" then
-      env[stack[b] or constants[-b]] = stack[a]
+      env[rk(b)] = stack[a]
 
     -- OP_SETUPVAL [A, B]    UpValue[B] := R(A)
     -- Write a register value into an upvalue.
@@ -3754,7 +3762,7 @@ function VirtualMachine:executeClosure(...)
     -- OP_SETTABLE [A, B, C]    R(A)[R(B)] := R(C)
     -- Write a register value into a table element.
     elseif opcode == "SETTABLE" then
-      stack[a][stack[b] or constants[-b]] = stack[c] or constants[-c]
+      stack[a][rk(b)] = rk(c)
 
     -- OP_NEWTABLE [A, B, C]    R(A) := {} (size = B,C)
     -- Create a new table and store it in a register.
@@ -3766,37 +3774,37 @@ function VirtualMachine:executeClosure(...)
     elseif opcode == "SELF" then
       local rb = stack[b]
       stack[a + 1] = rb
-      stack[a] = rb[stack[c] or constants[-c]]
+      stack[a] = rb[rk(c)]
 
     -- OP_ADD [A, B, C]    R(A) := RK(B) + RK(C)
     -- Add two values and store the result in a register.
     elseif opcode == "ADD" then
-      stack[a] = (stack[b] or constants[-b]) + (stack[c] or constants[-c])
+      stack[a] = rk(b) + rk(c)
 
     -- OP_SUB [A, B, C]    R(A) := RK(B) - RK(C)
     -- Subtract two values and store the result in a register.
     elseif opcode == "SUB" then
-      stack[a] = (stack[b] or constants[-b]) - (stack[c] or constants[-c])
+      stack[a] = rk(b) - rk(c)
 
     -- OP_MUL [A, B, C]    R(A) := RK(B) * RK(C)
     -- Multiply two values and store the result in a register.
     elseif opcode == "MUL" then
-      stack[a] = (stack[b] or constants[-b]) * (stack[c] or constants[-c])
+      stack[a] = rk(b) * rk(c)
 
     -- OP_DIV [A, B, C]    R(A) := RK(B) / RK(C)
     -- Divide two values and store the result in a register.
     elseif opcode == "DIV" then
-      stack[a] = (stack[b] or constants[-b]) / (stack[c] or constants[-c])
+      stack[a] = rk(b) / rk(c)
 
     -- OP_MOD [A, B, C]    R(A) := RK(B) % RK(C)
     -- Calculate the modulus of two values and store the result in a register.
     elseif opcode == "MOD" then
-      stack[a] = (stack[b] or constants[-b]) % (stack[c] or constants[-c])
+      stack[a] = rk(b) % rk(c)
 
     -- OP_POW [A, B, C]    R(A) := RK(B) ^ RK(C)
     -- Raise a value to the power of another and store the result in a register.
     elseif opcode == "POW" then
-      stack[a] = (stack[b] or constants[-b]) ^ (stack[c] or constants[-c])
+      stack[a] = rk(b) ^ rk(c)
 
     -- OP_UNM [A, B]    R(A) := -R(B)
     -- Negate a value and store the result in a register.
@@ -3830,35 +3838,43 @@ function VirtualMachine:executeClosure(...)
     -- OP_EQ [A, B, C]    if ((RK(B) == RK(C)) ~= A) then pc++
     -- Conditional jump based on equality.
     elseif opcode == "EQ" then
-      if ((stack[b] or constants[-b]) == (stack[c] or constants[-c])) ~= (a == 1) then
+      local isEqual = rk(b) == rk(c)
+      local bool = (a == 1)
+      if isEqual ~= bool then
         pc = pc + 1
       end
 
     -- OP_LT [A, B, C]    if ((RK(B) < RK(C)) ~= A) then pc++
     -- Conditional jump based on less-than comparison.
     elseif opcode == "LT" then
-      if ((stack[b] or constants[-b]) < (stack[c] or constants[-c])) ~= (a == 1) then
+      local isLessThan = rk(b) < rk(c)
+      local bool = (a == 1)
+      if isLessThan ~= bool then
         pc = pc + 1
       end
 
     -- OP_LE [A, B, C]    if ((RK(B) <= RK(C)) ~= A) then pc++
     -- Conditional jump based on less-than-or-equal comparison.
     elseif opcode == "LE" then
-      if ((stack[b] or constants[-b]) <= (stack[c] or constants[-c])) ~= (a == 1) then
+      local isLessThanOrEqual = rk(b) <= rk(c)
+      local bool = (a == 1)
+      if isLessThanOrEqual ~= bool then
         pc = pc + 1
       end
 
     -- OP_TEST [A, C]    if not (R(A) <=> C) then pc++
     -- Boolean test, with a conditional jump.
     elseif opcode == "TEST" then
-      if not stack[a] == (c == 1) then
+      local bool = (c == 1)
+      if not stack[a] == bool then
         pc = pc + 1
       end
 
     -- OP_TESTSET [A, B, C]    if (R(B) <=> C) then R(A) := R(B) else pc++
     -- Boolean test, with conditional assignment and jump.
     elseif opcode == "TESTSET" then
-      if not stack[a] == (c == 1) then
+      local bool = (c == 1)
+      if not stack[a] == bool then
         stack[a] = stack[b]
       else
         pc = pc + 1
