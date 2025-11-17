@@ -106,6 +106,7 @@ The parser generates a tree of nodes. Here is the specification for each node ty
 <summary>Click to expand AST Specification</summary>
 
 #### **Literals & Identifiers**
+*   `{ TYPE = "Variable", Name = <string>, VariableType = <"Local" | "Global" | "Upvalue"> }`
 *   `{ TYPE = "StringLiteral", Value = <string> }`
 *   `{ TYPE = "NumericLiteral", Value = <number> }`
 *   `{ TYPE = "BooleanLiteral", Value = <bool> }`
