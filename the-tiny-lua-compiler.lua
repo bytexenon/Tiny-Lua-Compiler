@@ -3589,15 +3589,16 @@ end
 --]]
 
 --* Constants *--
-local LUA_STACK_TOP = 0
+local unpack = (unpack or table.unpack) -- Lua 5.1/5.2+ compatibility.
+local USE_CURRENT_TOP = 0
 
 --* VirtualMachine *--
 local VirtualMachine = {}
-VirtualMachine.__index = VirtualMachine -- Set up for method calls via `.`
+VirtualMachine.__index = VirtualMachine -- Set up for method calls via `.`.
 
 VirtualMachine._CONFIG = {
   -- Number of list items to accumulate before a SETLIST instruction.
-  LFIELDS_PER_FLUSH = 50
+  FIELDS_PER_FLUSH = 50
 }
 
 --// VirtualMachine Constructor //--
@@ -3605,7 +3606,7 @@ function VirtualMachine.new(proto)
   local self = setmetatable({}, VirtualMachine)
 
   self.mainProto = proto -- Should only be used in `:execute()`.
-  self.lclosure  = nil   -- Current closure we're working with.
+  self.closure   = nil   -- Current closure we're working with.
 
   return self
 end
@@ -3622,7 +3623,7 @@ function VirtualMachine:pushClosure(closure)
     proto     = closure.proto,
     upvalues  = closure.upvalues  or {},
   }
-  self.lclosure = closure
+  self.closure = closure
 
   return closure
 end
@@ -3630,11 +3631,11 @@ end
 --// Execution //--
 function VirtualMachine:executeClosure(...)
   -- Optimization: localize fields.
-  local lclosure  = self.lclosure
+  local closure   = self.closure
   local stack     = {}
-  local env       = lclosure.env
-  local proto     = lclosure.proto
-  local upvalues  = lclosure.upvalues
+  local env       = closure.env
+  local proto     = closure.proto
+  local upvalues  = closure.upvalues
   local code      = proto.code
   local constants = proto.constants
   local numparams = proto.numParams
@@ -3652,7 +3653,7 @@ function VirtualMachine:executeClosure(...)
   end
 
   -- Initialize parameters.
-  local vararg
+  local vararg, varargLen
   local params = { ... }
 
   for paramIdx = 1, numparams do
@@ -3660,11 +3661,9 @@ function VirtualMachine:executeClosure(...)
   end
   if isVararg then
     vararg = { select(numparams + 1, ...) }
+    varargLen = self:getLength(unpack(vararg))
     stack[numparams] = vararg -- Implicit "arg" argument.
   end
-
-  -- Only gets set to a table of results when we have to return.
-  local returnValues = nil
 
   -- Prepare for execution loop.
   local pc = 1
@@ -3675,6 +3674,13 @@ function VirtualMachine:executeClosure(...)
     end
 
     local opcode, a, b, c = instruction[1], instruction[2], instruction[3], instruction[4]
+
+    -- NOTE:
+    --  Many Lua VM implementations written in Lua use binary search on sorted
+    --  opcode tables for faster dispatch, reducing lookup time from O(n) to
+    --  O(log n). For clarity and maintainability, TLC uses a simple linear
+    --  if-else chain instead. This makes the code easier to read and modify,
+    --  prioritizing education over speed.
 
     -- OP_MOVE [A, B]    R(A) := R(B)
     -- Copy a value between registers.
@@ -3728,7 +3734,7 @@ function VirtualMachine:executeClosure(...)
       local upvalue = upvalues[b + 1]
       upvalue.stack[upvalue.index] = stack[a]
 
-    -- OP_SETTABLE [A, B, C]    R(A)[R(B)] := R(C)
+    -- OP_SETTABLE [A, B, C]    R(A)[RK(B)] := RK(C)
     -- Write a register value into a table element.
     elseif opcode == "SETTABLE" then
       stack[a][rk(b)] = rk(c)
@@ -3739,7 +3745,7 @@ function VirtualMachine:executeClosure(...)
     elseif opcode == "NEWTABLE" then
       stack[a] = {}
 
-    -- OP_SELF [A, B, C]    R(A+1) := R(B) R(A) := R(B)[RK(C)]
+    -- OP_SELF [A, B, C]    R(A+1) := R(B); R(A) := R(B)[RK(C)]
     -- Prepare an object method for calling.
     elseif opcode == "SELF" then
       local rb = stack[b]
@@ -3836,18 +3842,38 @@ function VirtualMachine:executeClosure(...)
 
     -- OP_TEST [A, C]    if not (R(A) <=> C) then pc++
     -- Boolean test, with a conditional jump.
+    -- NOTE: After this instruction, the next instruction will always be a jump.
     elseif opcode == "TEST" then
       local bool = (c == 1)
       if (not stack[a]) == bool then
         pc = pc + 1
+      else
+        -- Optimization:
+        --  Since we know that the next instruction is guaranteed to be a jump,
+        --  we can implement it here to avoid an extra iteration of the loop.
+        --
+        -- TODO: Should we verify that the next instruction is indeed a JMP?
+        local nextInstruction = code[pc + 1]
+        local jumpDistance = nextInstruction[3]
+        pc = pc + 1 + jumpDistance
       end
 
     -- OP_TESTSET [A, B, C]    if (R(B) <=> C) then R(A) := R(B) else pc++
     -- Boolean test, with conditional assignment and jump.
+    -- NOTE: After this instruction, the next instruction will always be a jump.
     elseif opcode == "TESTSET" then
       local bool = (c == 1)
       if (not stack[a]) == bool then
         stack[a] = stack[b]
+
+        -- Optimization:
+        --  Since we know that the next instruction is guaranteed to be a jump,
+        --  we can implement it here to avoid an extra iteration of the loop.
+        --
+        -- TODO: Should we verify that the next instruction is indeed a JMP?
+        local nextInstruction = code[pc + 1]
+        local jumpDistance = nextInstruction[3]
+        pc = pc + 1 + jumpDistance
       else
         pc = pc + 1
       end
@@ -3858,7 +3884,7 @@ function VirtualMachine:executeClosure(...)
       local func = stack[a]
       local args = {}
       local nArgs
-      if b ~= LUA_STACK_TOP then
+      if b ~= USE_CURRENT_TOP then
         nArgs = b - 1
         for index = 1, nArgs do
           table.insert(args, stack[a + index])
@@ -3872,7 +3898,7 @@ function VirtualMachine:executeClosure(...)
 
       local returns = { func(unpack(args)) }
 
-      if c ~= LUA_STACK_TOP then
+      if c ~= USE_CURRENT_TOP then
         for index = 0, c - 2 do
           stack[a + index] = returns[index + 1]
         end
@@ -3890,7 +3916,7 @@ function VirtualMachine:executeClosure(...)
     elseif opcode == "TAILCALL" then
       local func = stack[a]
       local args = {}
-      if b ~= LUA_STACK_TOP then
+      if b ~= USE_CURRENT_TOP then
         for reg = a + 1, a + b - 1 do
           table.insert(args, stack[reg])
         end
@@ -3900,18 +3926,27 @@ function VirtualMachine:executeClosure(...)
         end
       end
 
-      local returns = { func(unpack(args)) }
-      local nReturns = self:getLength(unpack(returns))
-      top = a + nReturns - 1
-      for index = 1, nReturns do
-        stack[a + index - 1] = returns[index]
-      end
+      -- Continuation of original implementation:
+      --   ```lua
+      --   local returns = { func(unpack(args)) }
+      --   local nReturns = self:getLength(unpack(returns))
+      --   top = a + nReturns - 1
+      --   for index = 1, nReturns do
+      --     stack[a + index - 1] = returns[index]
+      --   end
+      --   ```
+      --
+      -- Optimization:
+      --   Since TAILCALL always comes before RETURN,
+      --   we can just return the function call results directly.
+
+      return func(unpack(args))
 
     -- OP_RETURN [A, B]    return R(A), ... ,R(A+B-2)
     -- Return values from function call.
     elseif opcode == "RETURN" then
       local returns = {}
-      if b == LUA_STACK_TOP then
+      if b == USE_CURRENT_TOP then
         for reg = a, top do
           table.insert(returns, stack[reg])
         end
@@ -3921,8 +3956,7 @@ function VirtualMachine:executeClosure(...)
         end
       end
 
-      returnValues = returns
-      break
+      return unpack(returns)
 
     -- OP_FORLOOP [A, sBx]   R(A)+=R(A+2)
     --                       if R(A) <?= R(A+1) then { pc+=sBx R(A+3)=R(A) }
@@ -3931,7 +3965,15 @@ function VirtualMachine:executeClosure(...)
       local step  = stack[a + 2]
       local idx   = stack[a] + step
       local limit = stack[a + 1]
-      if (step < 0 and idx >= limit) or (step > 0 and idx <= limit) then
+
+      local shouldContinue = false
+      if step >= 0 then
+        shouldContinue = (idx <= limit)
+      else
+        shouldContinue = (idx >= limit)
+      end
+
+      if shouldContinue then
         pc = pc + b
         stack[a] = idx
         stack[a + 3] = idx
@@ -3940,9 +3982,9 @@ function VirtualMachine:executeClosure(...)
     -- OP_FORPREP [A, sBx]    R(A)-=R(A+2) pc+=sBx
     -- Initialize a numeric for loop.
     elseif opcode == "FORPREP" then
-      local init = stack[a]
+      local init   = stack[a]
       local plimit = stack[a + 1]
-      local pstep = stack[a + 2]
+      local pstep  = stack[a + 2]
       if not tonumber(init) then
         error("Initial value must be a number")
       elseif not tonumber(plimit) then
@@ -3957,6 +3999,7 @@ function VirtualMachine:executeClosure(...)
     -- OP_TFORLOOP [A, C]    R(A+3), ... ,R(A+2+C) := R(A)(R(A+1), R(A+2))
     --                       if R(A+3) ~= nil then R(A+2)=R(A+3) else pc++
     -- Iterate a generic for loop.
+    -- NOTE: After this instruction, the next instruction will always be a jump.
     elseif opcode == "TFORLOOP" then
       local cb = a + 3
 
@@ -3979,6 +4022,15 @@ function VirtualMachine:executeClosure(...)
       if stack[cb] ~= nil then
         -- If not nil, copy it to R(A+2) (the control variable).
         stack[cb - 1] = stack[cb]
+
+        -- Optimization:
+        --  Since we know that the next instruction is guaranteed to be a jump,
+        --  we can implement it here to avoid an extra iteration of the loop.
+        --
+        -- TODO: Should we verify that the next instruction is indeed a JMP?
+        local nextInstruction = code[pc + 1]
+        local jumpDistance = nextInstruction[3]
+        pc = pc + 1 + jumpDistance
       else
         -- Otherwise, skip the next instruction.
         -- (Should be the jump back to the loop start.)
@@ -3988,19 +4040,25 @@ function VirtualMachine:executeClosure(...)
     -- OP_SETLIST [A, B, C]    R(A)[(C-1)*FPF+i] := R(A+i), 1 <= i <= B
     -- Set a range of array elements in a table.
     elseif opcode == "SETLIST" then
-      local n = b
-      if n == LUA_STACK_TOP then
-        n = top - a - 1
+      local targetTable = stack[a]
+      if type(targetTable) ~= "table" then
+        error("SETLIST target is not a table")
       end
 
-      local h = stack[a]
-      assert(type(h) == "table")
+      local len = b
+      if len == USE_CURRENT_TOP then
+        len = top - a - 1
+      end
 
-      local last = ((c - 1) * self._CONFIG.LFIELDS_PER_FLUSH) + n
-      for i = n, 1, -1 do
-        local val = stack[a + i]
-        h[last] = val
-        last = last - 1
+      -- If C is 0, it indicates that the next instruction
+      -- contains the actual C value (not implemented here).
+      if c == 0 then
+        error("SETLIST with C=0 is not supported in this VM implementation")
+      end
+
+      local offset = (c - 1) * self._CONFIG.FIELDS_PER_FLUSH
+      for i = 1, len do
+        targetTable[offset + i] = stack[a + i]
       end
 
     -- OP_VARARG [A]    close all variables in the stack up to (>=) R(A)
@@ -4066,7 +4124,7 @@ function VirtualMachine:executeClosure(...)
       stack[a] = function(...)
         self:pushClosure(tClosure)
         local returns = { self:executeClosure(...) }
-        self:pushClosure(lclosure)
+        self:pushClosure(closure)
 
         return unpack(returns)
       end
@@ -4074,10 +4132,9 @@ function VirtualMachine:executeClosure(...)
     -- OP_VARARG [A, B]    R(A), R(A+1), ..., R(A+B-1) = vararg
     -- Load vararg function arguments into registers.
     elseif opcode == "VARARG" then
-      local varargCount = #vararg
-      if b == LUA_STACK_TOP then
-        top = a + varargCount
-        for i = 1, varargCount do
+      if b == USE_CURRENT_TOP then
+        top = a + varargLen
+        for i = 1, varargLen do
           stack[a + i - 1] = vararg[i]
         end
       else
@@ -4091,10 +4148,6 @@ function VirtualMachine:executeClosure(...)
 
     -- Advance to the next instruction.
     pc = pc + 1
-  end
-
-  if returnValues then
-    return unpack(returnValues)
   end
 end
 
