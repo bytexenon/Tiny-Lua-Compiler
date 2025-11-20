@@ -214,9 +214,9 @@ function TLCTest:compileAndRun(code)
   local tokens    = tlc.Tokenizer.new(code):tokenize()
   local ast       = tlc.Parser.new(tokens):parse()
   local proto     = tlc.CodeGenerator.new(ast):generate()
-  local bytecode  = tlc.Compiler.new(proto):compile()
+  local bytecode  = tlc.BytecodeEmitter.new(proto):emit()
 
-  return self:runSandboxed(bytecode)
+  return loadstring(bytecode)()
 end
 
 function TLCTest:assertCompileError(code)
@@ -772,7 +772,7 @@ suite:describe("Complex General Tests", function()
       local tokens   = tlc.Tokenizer.new(code_to_run):tokenize()
       local ast      = tlc.Parser.new(tokens):parse()
       local proto    = tlc.CodeGenerator.new(ast):generate()
-      local bytecode = tlc.Compiler.new(proto):compile()
+      local bytecode = tlc.BytecodeEmitter.new(proto):emit()
       local func     = loadstring(bytecode)
 
       return func()
