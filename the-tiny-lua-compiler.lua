@@ -32,8 +32,8 @@ end
 -- Constructs a Prefix Tree (Trie) for efficient operator matching.
 --
 -- This structure solves the "Longest Prefix Match" problem. When the tokenizer
--- encounters a character like `.`, it needs to decide if it's a Dot (`.`),
--- a Concat (`..`), or Vararg (`...`).
+-- encounters a character like `>`, it needs to decide if it's a standalone `>`,
+-- or part of a longer operator like `>=`.
 --
 -- Instead of complex lookahead logic, we traverse this tree. If we can travel
 -- deeper (e.g., from `.` to `.`), we continue. If we stop, we know we've
@@ -141,16 +141,14 @@ Tokenizer.CONFIG = {
   })
 }
 
---[[
-  Character Classification Tables (Pre-computed)
-
-  Tokenization is the tightest loop in the compiler, running once per character.
-  Calling Lua's pattern matcher (`string.match`) inside this loop is too slow.
-
-  Instead, we pre-calculate the classification for every possible byte (0-255).
-  Checking `if PATTERNS.DIGIT[char]` becomes a simple array lookup, which is
-  orders of magnitude faster than regex matching.
---]]
+-- Character Classification Tables (Pre-computed)
+--
+-- Tokenization is the tightest loop in the compiler, running once per character.
+-- Calling Lua's pattern matcher (`string.match`) inside this loop is too slow.
+--
+-- Instead, we pre-calculate the classification for every possible byte (0-255).
+-- Checking `if PATTERNS.DIGIT[char]` becomes a simple array lookup, which is
+-- orders of magnitude faster than regex matching.
 Tokenizer.PATTERNS = {
   SPACE            = makePatternLookup("%s"),         -- Whitespace
   DIGIT            = makePatternLookup("%d"),         -- 0-9
@@ -2417,8 +2415,7 @@ function CodeGenerator:splitTableElements(elements)
   return implicitElems, explicitElems
 end
 
--- Used in methods like `processAssignmentStatement` to set
--- the value of a register to another register's value.
+-- Sets the value of a variable or table index from a register.
 function CodeGenerator:setRegisterValue(node, copyFromRegister)
   local nodeKind = node.kind
 
@@ -2430,11 +2427,13 @@ function CodeGenerator:setRegisterValue(node, copyFromRegister)
       -- OP_MOVE [A, B]    R(A) := R(B)
       self:emitInstruction("MOVE", variableRegister, copyFromRegister)
     elseif variableType == "Upvalue" then
+      local upvalueIndex = self:findOrCreateUpvalue(variableName)
       -- OP_SETUPVAL [A, B]    UpValue[B] := R(A)
-      self:emitInstruction("SETUPVAL", copyFromRegister, self:findOrCreateUpvalue(variableName))
+      self:emitInstruction("SETUPVAL", copyFromRegister, upvalueIndex)
     elseif variableType == "Global" then
+      local constantIndex = self:findOrCreateConstant(variableName)
       -- OP_SETGLOBAL [A, Bx]    Gbl[Kst(Bx)] := R(A)
-      self:emitInstruction("SETGLOBAL", copyFromRegister, self:findOrCreateConstant(variableName))
+      self:emitInstruction("SETGLOBAL", copyFromRegister, constantIndex)
     end
     return
   elseif nodeKind == "IndexExpression" then
@@ -2661,16 +2660,19 @@ function CodeGenerator:processVariable(node, register)
   local varType = node.variableType -- "Local" / "Upvalue" / "Global"
 
   if varType == "Local" then
+    -- Local variables are stored in the function's stack (registers).
     local variable = self:findVariableRegister(varName)
 
     -- OP_MOVE [A, B]    R(A) := R(B)
     self:emitInstruction("MOVE", register, variable)
   elseif varType == "Global" then
+    -- Globals are stored in the global environment table.
     local constantIndex = self:findOrCreateConstant(varName)
 
     -- OP_GETGLOBAL [A, Bx]    R(A) := Gbl[Kst(Bx)]
     self:emitInstruction("GETGLOBAL", register, constantIndex)
   elseif varType == "Upvalue" then
+    -- Upvalues are stored in the function's upvalue list.
     local upvalueIndex = self:findOrCreateUpvalue(varName)
 
     -- OP_GETUPVAL [A, B]    R(A) := UpValue[B]
@@ -2685,12 +2687,15 @@ function CodeGenerator:processFunctionCall(node, register, resultRegisters)
   local arguments    = node.arguments
   local isMethodCall = node.isMethodCall
 
+  -- Method calls (e.g., `obj:method()`) need special handling.
+  -- We need to load the `self` parameter (the table) into the
+  -- register before the function call, so we use the `SELF` instruction.
   if isMethodCall then
     local calleeExpressionIndex = callee.index
     local calleeExpressionBase  = callee.base
 
     self:processExpressionNode(calleeExpressionBase, register)
-    self:allocateRegisters(1) -- Used for `self` arg, will get free'd later.
+    self:allocateRegisters(1) -- Used for implicit `self` argument.
 
     local calleeIndexRegister = self:processConstantOrExpression(calleeExpressionIndex)
 
@@ -2796,22 +2801,26 @@ function CodeGenerator:processLocalFunctionDeclaration(node)
 end
 
 -- NOTE:
---   According to the Lua 5.1 assignment semantics (https://www.lua.org/manual/5.1/manual.html#2.4.3),
---   when there are a variable used in both sides of the assignment, the right-hand side expressions
---   should be evaluated first, and then assigned to the left-hand side variables. This means
---   that this code will incorrectly throw an error if compiled with our current implementation:
+--   According to the Lua 5.1 assignment semantics, when there are variables
+--   used in both sides of the assignment, the right-hand side expressions
+--   should be evaluated first, and then assigned to the left-hand side
+--   variables. This means that this code will incorrectly throw an error
+--   if compiled with our current implementation:
 --   ```lua
 --   local a, b = {}, 2
 --   a[b], b = 10, 20
 --   assert(a[2] == 10 and b == 20)
 --   ```
---   I haven't found an easy way to implement this behavior yet, so for now, we will leave it as is.
+--   I haven't found an easy way to implement this behavior yet, so for now,
+--   we will leave it as is.
+--
+--   Reference: https://www.lua.org/manual/5.1/manual.html#2.4.3
 function CodeGenerator:processAssignmentStatement(node)
   local lvalues     = node.lvalues
   local expressions = node.expressions
 
   local variableBaseRegister = self.stackSize - 1
-  local lvalueRegisterCount = self:processExpressionList(expressions, #lvalues)
+  local lvalueRegisterCount  = self:processExpressionList(expressions, #lvalues)
 
   for index, lvalue in ipairs(lvalues) do
     local lvalueRegister = variableBaseRegister + index
@@ -2825,10 +2834,10 @@ function CodeGenerator:processIfStatement(node)
   local clauses    = node.clauses
   local elseClause = node.elseClause
 
-  local jumpToEndPCs   = {}
-  local lastClause     = clauses[#clauses]
-  local previousJumpPC = nil
+  local jumpToEndPCs = {}
+  local lastClause   = clauses[#clauses]
 
+  -- Process all 'if' and 'elseif' clauses first.
   for _, clause in ipairs(clauses) do
     local condition = clause.condition
     local body      = clause.body
@@ -2836,24 +2845,35 @@ function CodeGenerator:processIfStatement(node)
     local conditionRegister = self:processExpressionNode(condition)
 
     -- OP_TEST [A, C]    if not (R(A) <=> C) then pc++
+    -- If the condition is false, jump to the next instruction.
+    -- (which is always a jump to the next clause)
     self:emitInstruction("TEST", conditionRegister, 0, 0)
     self:freeRegisters(1) -- Free conditionRegister
 
-    previousJumpPC = self:emitJump()
+    -- This is the jump that occurs if the condition is false.
+    -- We will patch it later to jump to the next clause.
+    local conditionIsFalseJumpPC = self:emitJump()
     self:processBlockNode(body)
 
-    local isLastClause = (clause == lastClause)
-    if not isLastClause or elseClause then
+    local isLastClause    = (clause == lastClause)
+    local shouldJumpToEnd = not isLastClause or elseClause
+    if shouldJumpToEnd then
       local jumpToEndPC = self:emitJump()
       table.insert(jumpToEndPCs, jumpToEndPC)
     end
-    self:patchJumpToHere(previousJumpPC)
+
+    -- Patch the condition false jump to here.
+    self:patchJumpToHere(conditionIsFalseJumpPC)
   end
 
+  -- Is there an 'else' clause to process?
+  -- NOTE: The previous clause's condition already jumps
+  -- to here, so we don't need to patch anything.
   if elseClause then
     self:processBlockNode(elseClause)
   end
 
+  -- Patch all jumps at the end of clauses to here.
   self:patchJumpsToHere(jumpToEndPCs)
 end
 
@@ -2862,7 +2882,7 @@ function CodeGenerator:processForGenericStatement(node)
   local expressions = node.expressions
   local body        = node.body
 
-  local baseStackSize = self.stackSize
+  local baseRegister = self.stackSize
   local expressionRegisters = self:processExpressionList(expressions, 3)
   self:declareLocalVariables(iterators)
 
@@ -2874,7 +2894,10 @@ function CodeGenerator:processForGenericStatement(node)
 
     -- OP_TFORLOOP [A, C]    R(A+3), ... ,R(A+2+C) := R(A)(R(A+1), R(A+2))
     --                       if R(A+3) ~= nil then R(A+2)=R(A+3) else pc++
-    self:emitInstruction("TFORLOOP", baseStackSize, 0, #iterators)
+    -- Skips next instruction if there are no more values.
+    self:emitInstruction("TFORLOOP", baseRegister, 0, #iterators)
+
+    -- Emit jump back to the start of the loop if there are more values.
     self:emitJumpBack(loopStartPC)
   end)
   self:undeclareVariables(iterators)
@@ -2891,10 +2914,13 @@ function CodeGenerator:processForNumericStatement(node)
   local startRegister = self:processExpressionNode(startExpr)
   self:processExpressionNode(limitExpr)
   local stepRegister = self:allocateRegisters(1)
+
+  -- Is there a step expression?
   if stepExpr then
     self:processExpressionNode(stepExpr, stepRegister)
   else
     -- OP_LOADK [A, Bx]    R(A) := Kst(Bx)
+    -- Default step is 1.
     self:emitInstruction("LOADK", stepRegister, self:findOrCreateConstant(1))
   end
 
