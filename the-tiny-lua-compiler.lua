@@ -3798,9 +3798,11 @@ function VirtualMachine:executeClosure(...)
     -- OP_LOADNIL [A, B]    R(A) := ... := R(B) := nil
     -- Load nil values into a range of registers.
     elseif opcode == "LOADNIL" then
-      for reg = a, b do
+      local reg = b
+      repeat
         stack[reg] = nil
-      end
+        reg = reg - 1
+      until reg < a
 
     -- OP_GETUPVAL [A, B]    R(A) := UpValue[B]
     -- Read an upvalue into a register.
