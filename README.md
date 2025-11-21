@@ -17,17 +17,6 @@ _Inspired by [Jamie Kyle's The Super Tiny Compiler](https://github.com/jamiebuil
 - **Speed**: While education is the priority, the tokenizer uses optimized lookups and the compiler is designed efficiently, making it quite fast for a compiler written in a high-level language.
 - **100% test coverage**: TLC has a test suite that covers 100% of the code. Want to see it in action? Run `lua tests/test.lua` in your terminal.
 
-### What isn't covered? (Non-Goals)
-
-Because TLC is designed to fit in a single file and be easily understood, we decided to leave out features that add significant complexity without teaching core compiler concepts:
-
-- **Debug Symbols:** We don't strip line numbers or debug info, we never generate them! This drastically simplifies the Tokenizer and Parser.
-- **[Constant Folding](https://en.wikipedia.org/wiki/Constant_folding):** Standard Lua converts `local x = 2 + 3` into `local x = 5` at compile time. TLC calculates this at runtime.
-- **Edge-Case Assignments:** Simultaneous assignments where the Left-Hand Side depends on a variable changing in the same statement (e.g., [`i, a[i] = i+1, 20`](https://www.lua.org/manual/5.1/manual.html#2.4.3)) are rare, but TLC may evaluate them differently than the standard C implementation.
-- **Unused Opcodes:** We skip `CLOSE` (which may break some code relying on it), `TESTSET` (it's just an optimization), and massive table constructors (over ~25k items).
-
-Everything else should work just like standard Lua 5.1!
-
 ### [Want to jump into the code? Click here](https://github.com/bytexenon/The-Tiny-Lua-Compiler/blob/main/the-tiny-lua-compiler.lua)
 
 ---
@@ -100,6 +89,17 @@ tlc.VirtualMachine.new(proto):execute()
 ### Okay so where do I begin?
 
 Awesome! Head on over to the [the-tiny-lua-compiler.lua](https://github.com/bytexenon/The-Tiny-Lua-Compiler/blob/main/the-tiny-lua-compiler.lua) file.
+
+### What isn't covered? (Non-Goals)
+
+Because TLC is designed to fit in a single file and be easily understood, we decided to leave out features that add significant complexity without teaching core compiler concepts:
+
+- **Debug Symbols:** We don't strip line numbers or debug info, we never generate them! This drastically simplifies the Tokenizer and Parser.
+- **[Constant Folding](https://en.wikipedia.org/wiki/Constant_folding):** Standard Lua converts `local x = 2 + 3` into `local x = 5` at compile time. TLC calculates this at runtime.
+- **Edge-Case Assignments:** Simultaneous assignments where the Left-Hand Side depends on a variable changing in the same statement (e.g., [`i, a[i] = i+1, 20`](https://www.lua.org/manual/5.1/manual.html#2.4.3)) are rare, but TLC may evaluate them differently than the standard C implementation.
+- **Unused Opcodes:** We skip `CLOSE` (which may break some code relying on it), `TESTSET` (it's just an optimization), and massive table constructors (over ~25k items).
+
+Everything else should work just like standard Lua 5.1!
 
 ### Tests
 
