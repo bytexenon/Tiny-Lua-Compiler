@@ -2066,7 +2066,7 @@ function CodeGenerator.new(ast)
   self.currentScope = nil
   self.stackSize    = 0
 
-  self.breakJumpPCs = {}
+  self.breakJumpPCs = nil
 
   return self
 end
@@ -2078,6 +2078,7 @@ function CodeGenerator:enterScope(isFunctionScope)
     locals      = {},
     parentScope = previousScope,
     isFunction  = (isFunctionScope and true) or false,
+    needClose   = false,
   }
 
   if previousScope then
@@ -2125,9 +2126,15 @@ function CodeGenerator:leaveScope()
 
   table.remove(scopes)
 
+  local needClose = currentScope.needClose and not currentScope.isFunction
   currentScope = currentScope.parentScope
   self.currentScope = currentScope
   self.stackSize = (currentScope and currentScope.stackSize) or 0
+
+  if needClose then
+    if self.breakJumpPCs then self.breakJumpPCs.needClose = true end
+    self:emitInstruction("CLOSE", self.stackSize, 0, 0)
+  end
 end
 
 --// Variable Management //--
@@ -2175,6 +2182,7 @@ function CodeGenerator:getUpvalueType(variableName)
   local isUpvalue = false
   while scope do
     if scope.locals[variableName] then
+      scope.needClose = true
       return (isUpvalue and "Upvalue") or "Local"
     elseif scope.isFunction then
       isUpvalue = true
@@ -2360,6 +2368,9 @@ end
 function CodeGenerator:patchBreakJumpsToHere()
   if not self.breakJumpPCs then return end
   self:patchJumpsToHere(self.breakJumpPCs)
+  if #self.breakJumpPCs > 0 and self.breakJumpPCs.needClose then
+    self:emitInstruction("CLOSE", self.stackSize, 0, 0)
+  end
   self.breakJumpPCs = nil
 end
 
@@ -2371,10 +2382,7 @@ function CodeGenerator:breakable(callback)
   callback()
   self:patchBreakJumpsToHere()
 
-  local breakJumpPCs = self.breakJumpPCs
   self.breakJumpPCs = previousBreakJumpPCs
-
-  return breakJumpPCs
 end
 
 --// Auxiliary/Helper Methods //--
@@ -3111,6 +3119,8 @@ function CodeGenerator:processBlockNode(blockNode)
 end
 
 function CodeGenerator:processFunctionBody(node)
+  local previousBreakJumpPCs = self.breakJumpPCs
+  self.breakJumpPCs = nil
   self:enterScope(true)
   for _, paramName in ipairs(node.parameters) do
     self:declareLocalVariable(paramName)
@@ -3126,6 +3136,7 @@ function CodeGenerator:processFunctionBody(node)
   -- OP_RETURN [A, B]    return R(A), ... ,R(A+B-2)
   self:emitInstruction("RETURN", 0, 1, 0)
   self:leaveScope()
+  self.breakJumpPCs = previousBreakJumpPCs
 end
 
 -- Adds `proto` prototype to the `self.proto.protos` list and generates
@@ -3768,6 +3779,8 @@ function VirtualMachine:executeClosure(...)
 
   local maxStackSize = proto.maxStackSize
   local top = maxStackSize
+  local upvalueStack = {}
+  local maxUpvalue = -1
 
   -- Gets a value from either the stack or constants table.
   -- NOTE: Constant indices are represented as negative numbers
@@ -4190,7 +4203,15 @@ function VirtualMachine:executeClosure(...)
 
     -- OP_VARARG [A]    close all variables in the stack up to (>=) R(A)
     elseif opcode == "CLOSE" then
-      -- Stub. No implementation needed for this VM.
+      for i = a, maxUpvalue do
+        local uv = upvalueStack[i]
+        if uv then
+          uv.stack = { stack[uv.index] }
+          uv.index = 1
+          upvalueStack[i] = nil
+        end
+      end
+      maxUpvalue = a - 1
 
     -- OP_CLOSURE [A, Bx]    R(A) := closure(KPROTO[Bx], R(A), ... ,R(A+n))
     -- Create a new closure (function) and store it in a register.
@@ -4206,17 +4227,18 @@ function VirtualMachine:executeClosure(...)
 
         local pseudoInstruction = code[pc]
         local opname = pseudoInstruction[1]
+        local index = pseudoInstruction[3]
         if opname == "MOVE" then
-          table.insert(tProtoUpvalues, {
+          local upvalue = upvalueStack[index] or {
+            index = index,
             stack = stack,
-            index = pseudoInstruction[3],
-          })
+          }
+          upvalueStack[index] = upvalue
+          if index > maxUpvalue then maxUpvalue = index end
+          table.insert(tProtoUpvalues, upvalue)
         elseif opname == "GETUPVAL" then
-          local upvalue = upvalues[pseudoInstruction[3] + 1]
-          table.insert(tProtoUpvalues, {
-            stack = upvalue.stack,
-            index = upvalue.index,
-          })
+          local upvalue = upvalues[index + 1]
+          table.insert(tProtoUpvalues, upvalue)
         else
           error("Unexpected instruction while capturing upvalues: " .. tostring(opname))
         end
