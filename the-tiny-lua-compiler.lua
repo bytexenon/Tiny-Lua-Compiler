@@ -2415,11 +2415,16 @@ function CodeGenerator:splitTableElements(elements)
   return implicitElems, explicitElems
 end
 
--- Sets the value of a variable or table index from a register.
-function CodeGenerator:setRegisterValue(node, copyFromRegister)
+-- Sets the value of the list of variables or table indices from a range of registers.
+function CodeGenerator:assignValuesToRegisters(nodes, index, copyFromRegister)
+  if index > #nodes then return end
+  local node = nodes[index]
   local nodeKind = node.kind
 
   if nodeKind == "Variable" then
+    -- First give the other index assignments a chance to read the base and index before it might change.
+    self:assignValuesToRegisters(nodes, index + 1, copyFromRegister + 1)
+
     local variableType = node.variableType
     local variableName = node.name
     if variableType == "Local" then
@@ -2443,6 +2448,10 @@ function CodeGenerator:setRegisterValue(node, copyFromRegister)
     local baseRegister  = self:processConstantOrExpression(baseNode)
     local indexRegister = self:processConstantOrExpression(indexNode)
 
+    -- This index assignemnt did read it's base and index.
+    -- Now give other index assginments a chance before doing the assignment.
+    self:assignValuesToRegisters(nodes, index + 1, copyFromRegister + 1)
+
     -- OP_SETTABLE [A, B, C]    R(A)[RK(B)] := RK(C)
     self:emitInstruction("SETTABLE", baseRegister, indexRegister, copyFromRegister)
     self:freeIfRegister(baseRegister)
@@ -2452,6 +2461,12 @@ function CodeGenerator:setRegisterValue(node, copyFromRegister)
   end
 
   error("CodeGenerator: Unsupported lvalue kind in setRegisterValue: " .. nodeKind)
+end
+
+-- Sets the value of a variable or table index from a register.
+-- Unused, for compatibility
+function CodeGenerator:setRegisterValue(node, copyFromRegister)
+  self:assignValuesToRegisters({node}, 1, copyFromRegister)
 end
 
 -- Processes a single page (50 or less) of implicit table elements.
@@ -2800,32 +2815,14 @@ function CodeGenerator:processLocalFunctionDeclaration(node)
   self:processFunction(body, variableRegister)
 end
 
--- NOTE:
---   According to the Lua 5.1 assignment semantics, when there are variables
---   used in both sides of the assignment, the right-hand side expressions
---   should be evaluated first, and then assigned to the left-hand side
---   variables. This means that this code will incorrectly throw an error
---   if compiled with our current implementation:
---   ```lua
---   local a, b = {}, 2
---   a[b], b = 10, 20
---   assert(a[2] == 10 and b == 20)
---   ```
---   I haven't found an easy way to implement this behavior yet, so for now,
---   we will leave it as is.
---
---   Reference: https://www.lua.org/manual/5.1/manual.html#2.4.3
 function CodeGenerator:processAssignmentStatement(node)
   local lvalues     = node.lvalues
   local expressions = node.expressions
 
-  local variableBaseRegister = self.stackSize - 1
+  local variableBaseRegister = self.stackSize
   local lvalueRegisterCount  = self:processExpressionList(expressions, #lvalues)
 
-  for index, lvalue in ipairs(lvalues) do
-    local lvalueRegister = variableBaseRegister + index
-    self:setRegisterValue(lvalue, lvalueRegister)
-  end
+  self:assignValuesToRegisters(lvalues, 1, variableBaseRegister)
 
   self:freeRegisters(lvalueRegisterCount)
 end
