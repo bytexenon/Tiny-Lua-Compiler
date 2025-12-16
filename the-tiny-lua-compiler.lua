@@ -3774,7 +3774,8 @@ function VirtualMachine:executeClosure(...)
   -- in our implementation, so in order to get the correct constant,
   -- we negate the index when accessing the constants table.
   local function rk(index)
-    return stack[index] or constants[-index]
+    if index < 0 then return constants[-index] end
+    return stack[index]
   end
 
   -- Initialize parameters.
