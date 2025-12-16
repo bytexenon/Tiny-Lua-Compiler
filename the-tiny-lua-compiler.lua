@@ -3928,13 +3928,11 @@ function VirtualMachine:executeClosure(...)
     -- OP_CONCAT [A, B, C]    R(A) := R(B).. ... ..R(C)
     -- Concatenate a range of registers and store the result in a register.
     elseif opcode == "CONCAT" then
-      local values = {}
-      for reg = b, c do
-        table.insert(values, stack[reg])
+      for reg = c - 1, b, -1 do
+        -- We cannot use table.concat as it does not call metamethods
+        stack[reg] = stack[reg] .. stack[reg + 1]
       end
-
-      -- Optimization: use table.concat for efficient string concatenation.
-      stack[a] = table.concat(values)
+      stack[a] = stack[b]
 
     -- OP_JMP [A, sBx]    pc+=sBx
     -- Jump to a new instruction offset.
