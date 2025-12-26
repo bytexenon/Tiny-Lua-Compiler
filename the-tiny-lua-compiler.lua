@@ -4032,7 +4032,7 @@ function VirtualMachine:executeClosure(...)
     -- NOTE: After this instruction, the next instruction will always be a jump.
     elseif opname == "TESTSET" then
       local bool = (c == 1)
-      if (not stack[a]) == bool then
+      if (not stack[b]) == bool then
         stack[a] = stack[b]
 
         -- Optimization:
