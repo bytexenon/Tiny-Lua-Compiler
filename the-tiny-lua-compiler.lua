@@ -593,10 +593,10 @@ end
 
 function Tokenizer:consumeLongComment()
   self:consumeCharacter("[")
-  local depth = self:calculateDelimiterDepth()
-  if self.curChar ~= "[" then
+    if self.curChar ~= "[" then
     return self:consumeShortComment()
   end
+local depth = self:calculateDelimiterDepth()
   self:consumeCharacter("[")
   self:consumeUntilEndingDelimiter(depth)
 
