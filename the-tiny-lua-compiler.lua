@@ -97,6 +97,7 @@ Tokenizer.CONFIG = {
   -- Single-character tokens.
   -- These are the simplest tokens to parse: if we see one of these characters,
   -- we immediately know what token it is without looking ahead.
+  -- stylua: ignore
   PUNCTUATION = {
     [":"] = "Colon",       [";"] = "Semicolon",
     [","] = "Comma",       ["."] = "Dot",
@@ -109,6 +110,7 @@ Tokenizer.CONFIG = {
   -- Escape Sequence Mapping.
   -- Maps the character following a backslash '\' to its actual byte value.
   -- e.g., 'n' -> '\n' (newline).
+  -- stylua: ignore
   ESCAPES =  {
     ["a"]  = "\a", ["b"]  = "\b", ["f"]  = "\f",
     ["n"]  = "\n", ["r"]  = "\r", ["t"]  = "\t",
@@ -123,6 +125,7 @@ Tokenizer.CONFIG = {
   -- When the tokenizer reads a word like "while", it first consumes it as a
   -- generic identifier. Then, it performs an O(1) check against this table.
   -- If present, the token type is switched from "Identifier" to "Keyword".
+  -- stylua: ignore
   KEYWORDS = createLookupTable({
     "and",      "break", "do",    "else",
     "elseif",   "end",   "false", "for",
@@ -135,9 +138,10 @@ Tokenizer.CONFIG = {
   -- Operator Trie.
   -- A Prefix Tree containing all valid operators.
   -- Used by `consumeOperator` to perform "Longest Prefix Matching".
+  -- stylua: ignore
   OPERATOR_TRIE = makeTrie({
-    "^", "*", "/", "%", "+", "-", "<", ">", "#", -- Single-char
-    "<=", ">=", "==", "~=", ".."                 -- Multi-char
+    "^",  "*",  "/",  "%",  "+", "-", "<", ">", "#", -- Single-char
+    "<=", ">=", "==", "~=", ".."                     -- Multi-char
   })
 }
 
@@ -149,6 +153,7 @@ Tokenizer.CONFIG = {
 -- Instead, we pre-calculate the classification for every possible byte (0-255).
 -- Checking `if PATTERNS.DIGIT[char]` becomes a simple array lookup, which is
 -- orders of magnitude faster than regex matching.
+-- stylua: ignore
 Tokenizer.PATTERNS = {
   SPACE            = makePatternLookup("%s"),         -- Whitespace
   DIGIT            = makePatternLookup("%d"),         -- 0-9
@@ -593,10 +598,10 @@ end
 
 function Tokenizer:consumeLongComment()
   self:consumeCharacter("[")
-    if self.curChar ~= "[" then
+  if self.curChar ~= "[" then
     return self:consumeShortComment()
   end
-local depth = self:calculateDelimiterDepth()
+  local depth = self:calculateDelimiterDepth()
   self:consumeCharacter("[")
   self:consumeUntilEndingDelimiter(depth)
 
@@ -760,6 +765,7 @@ Parser.CONFIG = {
         Right power > Left power.
         This makes `a ^ b ^ c` parse as `a ^ (b ^ c)`.
   --]]
+  -- stylua: ignore
   PRECEDENCE = {
     ["+"]   = {6, 6},  ["-"]   = {6, 6}, -- Addition/Subtraction
     ["*"]   = {7, 7},  ["/"]   = {7, 7}, -- Multiplication/Division
@@ -789,9 +795,10 @@ Parser.CONFIG = {
 
   -- Statement Dispatcher.
   -- Maps a keyword to the specific function responsible for parsing that statement.
+  -- stylua: ignore
   KEYWORD_HANDLERS = {
-    ["break"]    = "parseBreakStatement",
     ["do"]       = "parseDoStatement",
+    ["break"]    = "parseBreakStatement",
     ["for"]      = "parseForStatement",
     ["function"] = "parseFunctionDeclaration",
     ["if"]       = "parseIfStatement",
@@ -803,6 +810,8 @@ Parser.CONFIG = {
 
   -- Lookups for quick operator classification.
   UNARY_OPERATORS  = createLookupTable({ "-", "#", "not" }),
+
+  -- stylua: ignore
   BINARY_OPERATORS = createLookupTable({
     "+",  "-",   "*",  "/",
     "%",  "^",   "..", "==",
@@ -1559,7 +1568,7 @@ function Parser:parseLocalStatement()
       }
     }
   else
--- It's a regular local variable declaration.
+    -- It's a regular local variable declaration.
     -- <ident_list> [= <expr_list>]
     local variables = self:consumeIdentifierList()
     local initializers = {}
@@ -1993,7 +2002,7 @@ CodeGenerator.CONFIG = {
   MAX_REGISTERS  = 250,
 
   -- Maximum amount of elements for a single SETLIST instruction.
--- If more elements are needed, multiple SETLIST instructions are emitted.
+  -- If more elements are needed, multiple SETLIST instructions are emitted.
   SETLIST_MAX = 50,
 
   -- Node kinds that can return multiple values (multiret).
@@ -2002,11 +2011,14 @@ CodeGenerator.CONFIG = {
   MULTIRET_NODES = createLookupTable({"FunctionCall", "VarargExpression"}),
 
   CONTROL_FLOW_OPERATOR_LOOKUP = createLookupTable({"and", "or"}),
+
+  -- stylua: ignore
   UNARY_OPERATOR_LOOKUP = {
     ["-"]   = "UNM",
     ["#"]   = "LEN",
     ["not"] = "NOT"
   },
+  -- stylua: ignore
   ARITHMETIC_OPERATOR_LOOKUP = {
     ["+"] = "ADD", ["-"] = "SUB",
     ["*"] = "MUL", ["/"] = "DIV",
@@ -2014,12 +2026,14 @@ CodeGenerator.CONFIG = {
   },
 
   -- Format: [operator] = {opname, opposite}
+  -- stylua: ignore
   COMPARISON_INSTRUCTION_LOOKUP = {
     ["=="] = {"EQ", 1}, ["~="] = {"EQ", 0},
     ["<"]  = {"LT", 1}, [">"]  = {"LT", 1},
     ["<="] = {"LE", 1}, [">="] = {"LE", 1}
   },
 
+  -- stylua: ignore
   EXPRESSION_HANDLERS = {
     -- Literals --
     ["StringLiteral"]  = "processLiteral",
@@ -2041,6 +2055,7 @@ CodeGenerator.CONFIG = {
     ["VarargExpression"]        = "processVarargExpression",
   },
 
+  -- stylua: ignore
   STATEMENT_HANDLERS = {
     ["CallStatement"]             = "processCallStatement",
     ["LocalDeclarationStatement"] = "processLocalDeclarationStatement",
@@ -2113,7 +2128,7 @@ function CodeGenerator:leaveScope()
     -- count how many local variables are declared in this scope to determine
     -- how many registers should be in use at most.
 
--- Arguments are treated as local variables.
+    -- Arguments are treated as local variables.
     local variableCount = 0
     for _ in pairs(currentScope.locals) do
       variableCount = variableCount + 1
@@ -2131,7 +2146,7 @@ function CodeGenerator:leaveScope()
     end
   end
 
--- Remove the current scope from the stack.
+  -- Remove the current scope from the stack.
   table.remove(scopes)
 
   local needClose = currentScope.needClose and not currentScope.isFunction
@@ -2141,8 +2156,8 @@ function CodeGenerator:leaveScope()
 
   if needClose then
     if self.breakJumpPCs then
-self.breakJumpPCs.needClose = true
-end
+      self.breakJumpPCs.needClose = true
+    end
 
     -- OP_CLOSE [A]    close all variables in the stack up to (>=) R(A)
     self:emitInstruction("CLOSE", self.stackSize, 0, 0)
@@ -2328,7 +2343,7 @@ function CodeGenerator:processConstantOrExpression(node, register)
     end
   end
 
--- Otherwise, process it as an expression
+  -- Otherwise, process it as an expression
   return self:processExpressionNode(node, register)
 end
 
@@ -2363,9 +2378,9 @@ function CodeGenerator:patchJump(fromPC, toPC)
   local instruction = self.proto.code[fromPC]
   if not instruction then
     error(
-"CodeGenerator: Invalid 'fromPC' for jump patching: "
-.. tostring(fromPC)
-)
+      "CodeGenerator: Invalid 'fromPC' for jump patching: "
+      .. tostring(fromPC)
+    )
   end
 
   local offset = toPC - (fromPC + 1)
@@ -2387,7 +2402,7 @@ function CodeGenerator:patchBreakJumpsToHere()
   if not self.breakJumpPCs then return end
   self:patchJumpsToHere(self.breakJumpPCs)
   if #self.breakJumpPCs > 0 and self.breakJumpPCs.needClose then
--- OP_CLOSE [A]    close all variables in the stack up to (>=) R(A)
+    -- OP_CLOSE [A]    close all variables in the stack up to (>=) R(A)
     self:emitInstruction("CLOSE", self.stackSize, 0, 0)
   end
   self.breakJumpPCs = nil
@@ -2618,7 +2633,7 @@ function CodeGenerator:processBinaryOperator(node, register)
   -- String concatenation (..)
   elseif operator == ".." then
     local bottomRegister = self:processExpressionNode(left)
-    
+
     -- Optimization: Flatten consecutive concatenations.
     -- That will help us reduce the number of CONCAT instructions.
     -- For example, the expression:
@@ -3011,7 +3026,7 @@ function CodeGenerator:processRepeatStatement(node)
     local conditionRegister = self:processExpressionNode(condition)
 
     if self.currentScope.needClose then
--- OP_CLOSE [A]    close all variables in the stack up to (>=) R(A)
+      -- OP_CLOSE [A]    close all variables in the stack up to (>=) R(A)
       self:emitInstruction("CLOSE", self.currentScope.parentScope.stackSize, 0, 0)
       self.currentScope.needClose = false
     end
@@ -3199,9 +3214,9 @@ function CodeGenerator:generateClosure(proto, closureRegister)
       self:emitInstruction("GETUPVAL", 0, self:findOrCreateUpvalue(upvalueName))
     else -- Assume it's a global.
       error(
-"CodeGenerator: The upvalue cannot be a global: "
-.. upvalueName
-)
+        "CodeGenerator: The upvalue cannot be a global: "
+        .. upvalueName
+      )
     end
   end
 end
@@ -3336,6 +3351,7 @@ BytecodeEmitter.CONFIG = {
   --   - argCMode: The type of the C argument (OP_ARG_N, OP_ARG_U, OP_ARG_R, OP_ARG_K).
   --
   -- Source: https://www.lua.org/source/5.1/lopcodes.c.html#luaP_opmodes
+  -- stylua: ignore
   OPCODE_LOOKUP = {
     ["MOVE"]     = {0, MODE_iABC, OP_ARG_R, OP_ARG_N},   ["LOADK"]     = {1, MODE_iABx, OP_ARG_K, OP_ARG_N},
     ["LOADBOOL"] = {2, MODE_iABC, OP_ARG_U, OP_ARG_U},   ["LOADNIL"]   = {3, MODE_iABC, OP_ARG_R, OP_ARG_N},
@@ -3427,9 +3443,9 @@ end
 function BytecodeEmitter:encodeUint8(value)
   if value < 0 or value > 2^8 - 1 then
     error(
-"BytecodeEmitter: encodeUint8 value out of range of u8: "
-.. tostring(value)
-)
+      "BytecodeEmitter: encodeUint8 value out of range of u8: "
+      .. tostring(value)
+    )
   end
 
   return string.char(value % 256)
@@ -3439,9 +3455,9 @@ end
 function BytecodeEmitter:encodeUint32(value)
   if value < 0 or value > 2^32 - 1 then
     error(
-"BytecodeEmitter: encodeUint32 value out of range of u32: "
-.. tostring(value)
-)
+      "BytecodeEmitter: encodeUint32 value out of range of u32: "
+      .. tostring(value)
+    )
   end
 
   local b1 = value % 256 value = math.floor(value / 256)
@@ -3456,9 +3472,9 @@ end
 function BytecodeEmitter:encodeUint64(value)
   if value < 0 or value > 2^64 - 1 then
     error(
-"BytecodeEmitter: encodeUint64 value out of range of u64: "
-.. tostring(value)
-)
+      "BytecodeEmitter: encodeUint64 value out of range of u64: "
+      .. tostring(value)
+    )
   end
 
   local lowWord  = value % 2^32
@@ -3485,7 +3501,7 @@ function BytecodeEmitter:encodeFloat64(value)
     -- The special representation for NaN is:
     --  exponent = all bits set to 1 (2047)
     --  faction  = non-zero value for quiet NaN (we'll use 1)
---
+    --
     -- Fun fact: IEEE 754 defines two types of NaN:
     --   - Quiet NaN (qNaN): The most significant bit of the fraction is set to 1.
     --   - Signaling NaN (sNaN): The most significant bit of the fraction is set to 0.
@@ -3681,10 +3697,10 @@ function BytecodeEmitter:encodeInstruction(instruction)
   end
 
   error(
-"BytecodeEmitter: Unsupported instruction format for '"
-.. instructionName
-.. "'"
-)
+    "BytecodeEmitter: Unsupported instruction format for '"
+    .. instructionName
+    .. "'"
+  )
 end
 
 -- Serializes the code section of a function prototype.
@@ -3718,8 +3734,8 @@ end
 function BytecodeEmitter:encodePrototype(proto)
   -- Basic validation of the function prototype.
   if not proto.code or not proto.constants then
-error("BytecodeEmitter: Invalid function prototype")
-    end
+    error("BytecodeEmitter: Invalid function prototype")
+  end
 
   return table.concat({
     -- Header --
@@ -3814,7 +3830,7 @@ end
 
 function VirtualMachine:pushClosure(closure)
   closure = {
-        env       = closure.env       or _G,
+    env       = closure.env       or _G,
     proto     = closure.proto,
     upvalues  = closure.upvalues  or {},
   }
@@ -4133,7 +4149,7 @@ function VirtualMachine:executeClosure(...)
         top = a + b
       end
 
-            -- Optimization:
+      -- Optimization:
       --   Since TAILCALL always comes before RETURN,
       --   we can just return the function call results directly.
 
@@ -4285,27 +4301,27 @@ function VirtualMachine:executeClosure(...)
           }
           upvalueStack[index] = upvalue
           if index > maxUpvalue then
-maxUpvalue = index
-end
+            maxUpvalue = index
+          end
           table.insert(tProtoUpvalues, upvalue)
         elseif nextOpname == "GETUPVAL" then
           local upvalue = upvalues[index + 1]
           table.insert(tProtoUpvalues, upvalue)
         else
           error(
-"Unexpected instruction while capturing upvalues: "
-.. tostring(nextOpname)
-)
+            "Unexpected instruction while capturing upvalues: "
+            .. tostring(nextOpname)
+          )
         end
       end
 
       local tClosure = {
-                env       = nil,
+        env       = nil,
         proto     = tProto,
         upvalues  = tProtoUpvalues,
       }
 
-            stack[a] = function(...)
+      stack[a] = function(...)
         self:pushClosure(tClosure)
         local nReturns, returns = pack(self:executeClosure(...))
         self:pushClosure(closure)
@@ -4316,15 +4332,15 @@ end
     -- OP_VARARG [A, B]    R(A), R(A+1), ..., R(A+B-1) = vararg
     -- Load vararg function arguments into registers.
     elseif opname == "VARARG" then
-local upperBound = b - 1
+      local upperBound = b - 1
       if b == USE_CURRENT_TOP then
         top = a + varargLen
         upperBound = top
-        end
-      
-        for i = 1, upperBound do
-          stack[a + i - 1] = vararg[i]
-              end
+      end
+
+      for i = 1, upperBound do
+        stack[a + i - 1] = vararg[i]
+      end
     else
       error("Unimplemented instruction: " .. tostring(opname))
     end
@@ -4337,7 +4353,7 @@ end
 function VirtualMachine:execute()
   -- Push main closure.
   self:pushClosure({
-        env       = _G,
+    env       = _G,
     proto     = self.mainProto,
     upvalues  = {},
   })
