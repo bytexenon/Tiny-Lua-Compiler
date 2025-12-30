@@ -158,7 +158,3 @@ The parser generates a tree of nodes. Here is the specification for each node ty
 
 I don't take donations, but you can support TLC by starring the repository and sharing it with others.
 If you find a bug or have a feature request, feel free to open an issue or submit a pull request.
-
----
-
-[![cc-by-4.0](https://licensebuttons.net/l/by/4.0/80x15.png)](http://creativecommons.org/licenses/by/4.0/)
