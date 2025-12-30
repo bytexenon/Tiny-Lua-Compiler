@@ -4403,8 +4403,66 @@ function VirtualMachine:execute()
   return self:executeClosure()
 end
 
+--// Low-Level Shortcuts (Step-by-Step) //--
+
+-- Code (string) -> Tokens (list)
+local function tokenize(code)
+  return Tokenizer.new(code):tokenize()
+end
+
+-- Tokens (list) -> AST (table)
+local function parseTokens(tokens)
+  return Parser.new(tokens):parse()
+end
+
+-- AST (table) -> Proto (table)
+local function generate(ast)
+  return CodeGenerator.new(ast):generate()
+end
+
+-- Proto (table) -> Bytecode (string)
+local function emit(proto)
+  return BytecodeEmitter.new(proto):emit()
+end
+
+-- Proto (table) -> Execution (results...)
+local function execute(proto)
+  return VirtualMachine.new(proto):execute()
+end
+
+--// High-Level Shortcuts (Pipelines) //--
+
+-- Code -> AST
+local function parse(code)
+  return parseTokens(tokenize(code))
+end
+
+-- Code -> Proto
+local function compileToProto(code)
+  return generate(parse(code))
+end
+
+-- Code -> Bytecode
+local function compile(code)
+  return emit(compileToProto(code))
+end
+
+-- Code -> Execution
+local function run(code)
+  return execute(compileToProto(code))
+end
+
 -- Now I'm just exporting everything...
 return {
+  -- ████████╗ ██╗       ██████╗
+  -- ╚══██╔══╝ ██║      ██╔════╝
+  --    ██║    ██║      ██║
+  --    ██║    ██║      ██║
+  --    ██║    ███████╗ ╚██████╗
+  --    ╚═╝    ╚══════╝  ╚═════╝
+  --      Tiny Lua Compiler
+  --         MIT License
+
   Tokenizer       = Tokenizer,
   Parser          = Parser,
   CodeGenerator   = CodeGenerator,
@@ -4415,27 +4473,26 @@ return {
   -- It is highly recommended to use these shortcut functions for all tasks!
   -- Why? Because these functions act as a stable, future-proof entry points.
   -- If the internal compilation steps (tokenizer, parser, codegen, etc.) ever change,
-  -- code that uses ONLY these functions is more likely to continue to work as expected.
+  -- code that uses these shortcuts will continue to work without modification.
   -- If you use the classes directly, your code may break with future updates!
   -- Always use the shortcut functions unless you are hacking on the compiler internals.
-  fullCompile = function(code)
-    assert(type(code) == "string", "Expected a string for 'code', got " .. type(code))
 
-    local tokens   = Tokenizer.new(code):tokenize()
-    local ast      = Parser.new(tokens):parse()
-    local proto    = CodeGenerator.new(ast):generate()
-    local bytecode = BytecodeEmitter.new(proto):emit()
+  -- Legacy API (Deprecated, kept for backward compatibility)
+  fullCompile   = compile,
+  compileAndRun = run,
 
-    return bytecode
-  end,
-  compileAndRun = function(code)
-    assert(type(code) == "string", "Expected a string for 'code', got " .. type(code))
+  -- Standard API (High-Level)
+  -- Takes code and returns the desired output directly.
+  tokenize       = tokenize,       -- Code -> Tokens
+  parse          = parse,          -- Code -> AST
+  compileToProto = compileToProto, -- Code -> Proto
+  compile        = compile,        -- Code -> Bytecode
+  run            = run,            -- Code -> Execution
 
-    local tokens = Tokenizer.new(code):tokenize()
-    local ast    = Parser.new(tokens):parse()
-    local proto  = CodeGenerator.new(ast):generate()
-
-    local vm = VirtualMachine.new(proto)
-    return vm:execute()
-  end
+  -- Low-Level API (Step-by-Step)
+  -- Takes the previous stage's output as input.
+  parseTokens = parseTokens, -- Tokens -> AST
+  generate    = generate,    -- AST -> Proto
+  emit        = emit,        -- Proto -> Bytecode
+  execute     = execute,     -- Proto -> Execution
 }
