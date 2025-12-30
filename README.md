@@ -66,17 +66,17 @@ local source = [[
 -- -----------------------
 
 -- Tokenize: Raw text -> Stream of tokens
-local tokens = tlc.Tokenizer.new(source):tokenize()
+local tokens = tlc.tokenize(source)
 
 -- Parse: Stream of tokens -> Abstract Syntax Tree (AST)
-local ast = tlc.Parser.new(tokens):parse()
+local ast = tlc.parseTokens(tokens)
 
 -- Generate Code: AST -> Function Prototype (Intermediate Representation)
-local proto = tlc.CodeGenerator.new(ast):generate()
+local proto = tlc.generate(ast)
 
 -- 3. Execution
 -- Run the prototype in the Virtual Machine
-tlc.VirtualMachine.new(proto):execute()
+tlc.execute(proto)
 
 --[[
   EXPECTED OUTPUT:
