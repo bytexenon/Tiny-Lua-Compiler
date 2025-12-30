@@ -2247,7 +2247,6 @@ function CodeGenerator:emitPrototype(properties)
     numParams    = properties.numParams    or 0,
     maxStackSize = properties.maxStackSize or self.CONFIG.MIN_STACK_SIZE,
     isVararg     = properties.isVararg     or false,
-    functionName = properties.functionName or "@tlc",
 
     -- Internal lookups for quick access.
     constantLookup = {}, -- format: {[constant] = index in proto.constants}
