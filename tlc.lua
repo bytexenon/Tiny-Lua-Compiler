@@ -3637,8 +3637,8 @@ function BytecodeEmitter:encodeABCInstruction(opcode, a, instruction, argBMode, 
   local b, c = instruction[3], instruction[4]
 
   -- Validate operands B and C (9 bits signed: -256 to 255 during RK encoding steps).
-  self:validateOperand(b, -256, 255, "B", instructionName)
-  self:validateOperand(c, -256, 255, "C", instructionName)
+  self:validateOperand(b, -2^8, 2^8 - 1, "B", instructionName)
+  self:validateOperand(c, -2^8, 2^8 - 1, "C", instructionName)
 
   -- Handle RK() operands (register or constant).
   -- If the argument mode is OpArgK, we encode constants specially.
@@ -3666,7 +3666,7 @@ function BytecodeEmitter:encodeABxInstruction(opcode, a, instruction)
   local bx = self:toUnsigned(instruction[3])
 
   -- Validate operand Bx (18 bits unsigned: 0 to 262143).
-  self:validateOperand(bx, 0, 262143, "Bx", instructionName)
+  self:validateOperand(bx, 0, 2^18 - 1, "Bx", instructionName)
 
   -- Shift components to their positions.
   local shiftedA  = self:lshift(a, POS_A)
@@ -3686,7 +3686,7 @@ function BytecodeEmitter:encodeAsBxInstruction(opcode, a, instruction)
   local b = instruction[3]
 
   -- Validate operand sBx (18 bits signed: -131072 to 131071).
-  self:validateOperand(b, -131072, 131071, "sBx", instructionName)
+  self:validateOperand(b, -2^17, 2^17 - 1, "sBx", instructionName)
 
   -- sBx Encoding (Bias):
   -- We add a bias of 131071 (2^17 - 1) to the value.
@@ -3730,7 +3730,7 @@ function BytecodeEmitter:encodeInstruction(instruction)
   local a = instruction[2]
 
   -- Validate operand A (8 bits unsigned: 0 to 255)
-  self:validateOperand(a, 0, 255, "A", instructionName)
+  self:validateOperand(a, 0, 2^8 - 1, "A", instructionName)
 
   -- Dispatch to the appropriate encoder based on the instruction mode.
   if opmode == MODE_iABC then
