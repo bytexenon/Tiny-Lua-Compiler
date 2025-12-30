@@ -166,7 +166,10 @@ Tokenizer.PATTERNS = {
 -- Creates a new Tokenizer instance for a given source code string.
 function Tokenizer.new(code)
   --// Type Checking //--
-  assert(type(code) == "string", "Tokenizer.new requires a string as input code. Got: " .. type(code))
+  assert(
+    type(code) == "string",
+    "Tokenizer.new requires a string as input code. Got: " .. type(code)
+  )
 
   --// Instance Creation //--
   -- Create the instance table and set its metatable to `Tokenizer`.
@@ -824,7 +827,10 @@ Parser.CONFIG = {
 -- Creates a new Parser instance given a list of tokens from the Tokenizer.
 function Parser.new(tokens)
   --// Type Checking //--
-  assert(type(tokens) == "table", "Parser.new requires a table of tokens. Got: " .. type(tokens))
+  assert(
+    type(tokens) == "table",
+    "Parser.new requires a table of tokens. Got: " .. type(tokens)
+  )
 
   --// Instance Creation //--
   local self = setmetatable({}, Parser)
@@ -1742,9 +1748,14 @@ function Parser:parseForStatement()
   local limitExpr = expressions[2]
   local stepExpr  = expressions[3]
   if not startExpr or not limitExpr then
-    self:error("Numeric 'for' loop requires at least a start and limit expression.")
+    self:error(
+      "Numeric 'for' loop requires at least a start and limit expression."
+    )
   elseif #expressions > 3 then
-    self:error("Numeric 'for' loop allows at most a start, limit, and optional step expression.")
+    self:error(
+      "Numeric 'for' loop allows at most a start, limit, "
+      .. "and optional step expression."
+    )
   end
 
   -- Parse the loop body.
@@ -1835,8 +1846,10 @@ function Parser:parseAssignment(lvalue)
 
     -- Validate that what we parsed is actually a valid assignment target.
     if not self:isValidAssignmentLvalue(nextLValue) then
-      self:error("Invalid assignment target: expected variable or table index, got " ..
-                 tostring(nextLValue and nextLValue.kind or "nil"))
+      self:error(
+        "Invalid assignment target: expected variable or table index, got "
+        .. tostring(nextLValue and nextLValue.kind or "nil")
+      )
     end
 
     table.insert(lvalues, nextLValue)
@@ -2072,8 +2085,14 @@ CodeGenerator.CONFIG = {
 
 function CodeGenerator.new(ast)
   --// Asserting //
-  assert(type(ast) == "table", "Expected 'ast' argument to be a table, got: " .. type(ast))
-  assert(ast.kind == "Program", "Expected 'ast' to be a 'Program' node, got: " .. ast.kind)
+  assert(
+    type(ast) == "table",
+    "Expected 'ast' argument to be a table, got: " .. type(ast)
+  )
+  assert(
+    ast.kind == "Program",
+    "Expected 'ast' to be a 'Program' node, got: " .. ast.kind
+  )
 
   --// Initialization //
   local self = setmetatable({}, CodeGenerator)
@@ -2501,7 +2520,10 @@ function CodeGenerator:assignValuesToRegisters(nodes, index, copyFromRegister)
     return
   end
 
-  error("CodeGenerator: Unsupported lvalue kind in assignValuesToRegisters: " .. nodeKind)
+  error(
+    "CodeGenerator: Unsupported lvalue kind in assignValuesToRegisters: "
+    .. nodeKind
+  )
 end
 
 -- Processes a single page (50 or less) of implicit table elements.
@@ -3350,33 +3372,59 @@ BytecodeEmitter.CONFIG = {
   -- Source: https://www.lua.org/source/5.1/lopcodes.c.html#luaP_opmodes
   -- stylua: ignore
   OPCODE_LOOKUP = {
-    ["MOVE"]     = {0, MODE_iABC, OP_ARG_R, OP_ARG_N},   ["LOADK"]     = {1, MODE_iABx, OP_ARG_K, OP_ARG_N},
-    ["LOADBOOL"] = {2, MODE_iABC, OP_ARG_U, OP_ARG_U},   ["LOADNIL"]   = {3, MODE_iABC, OP_ARG_R, OP_ARG_N},
-    ["GETUPVAL"] = {4, MODE_iABC, OP_ARG_U, OP_ARG_N},   ["GETGLOBAL"] = {5, MODE_iABx, OP_ARG_K, OP_ARG_N},
-    ["GETTABLE"] = {6, MODE_iABC, OP_ARG_R, OP_ARG_K},   ["SETGLOBAL"] = {7, MODE_iABx, OP_ARG_K, OP_ARG_N},
-    ["SETUPVAL"] = {8, MODE_iABC, OP_ARG_U, OP_ARG_N},   ["SETTABLE"]  = {9, MODE_iABC, OP_ARG_K, OP_ARG_K},
-    ["NEWTABLE"] = {10, MODE_iABC, OP_ARG_U, OP_ARG_U},  ["SELF"]      = {11, MODE_iABC, OP_ARG_R, OP_ARG_K},
-    ["ADD"]      = {12, MODE_iABC, OP_ARG_K, OP_ARG_K},  ["SUB"]       = {13, MODE_iABC, OP_ARG_K, OP_ARG_K},
-    ["MUL"]      = {14, MODE_iABC, OP_ARG_K, OP_ARG_K},  ["DIV"]       = {15, MODE_iABC, OP_ARG_K, OP_ARG_K},
-    ["MOD"]      = {16, MODE_iABC, OP_ARG_K, OP_ARG_K},  ["POW"]       = {17, MODE_iABC, OP_ARG_K, OP_ARG_K},
-    ["UNM"]      = {18, MODE_iABC, OP_ARG_R, OP_ARG_N},  ["NOT"]       = {19, MODE_iABC, OP_ARG_R, OP_ARG_N},
-    ["LEN"]      = {20, MODE_iABC, OP_ARG_R, OP_ARG_N},  ["CONCAT"]    = {21, MODE_iABC, OP_ARG_R, OP_ARG_R},
-    ["JMP"]      = {22, MODE_iAsBx, OP_ARG_R, OP_ARG_N}, ["EQ"]        = {23, MODE_iABC, OP_ARG_K, OP_ARG_K},
-    ["LT"]       = {24, MODE_iABC, OP_ARG_K, OP_ARG_K},  ["LE"]        = {25, MODE_iABC, OP_ARG_K, OP_ARG_K},
-    ["TEST"]     = {26, MODE_iABC, OP_ARG_R, OP_ARG_U},  ["TESTSET"]   = {27, MODE_iABC, OP_ARG_R, OP_ARG_U},
-    ["CALL"]     = {28, MODE_iABC, OP_ARG_U, OP_ARG_U},  ["TAILCALL"]  = {29, MODE_iABC, OP_ARG_U, OP_ARG_U},
-    ["RETURN"]   = {30, MODE_iABC, OP_ARG_U, OP_ARG_N},  ["FORLOOP"]   = {31, MODE_iAsBx, OP_ARG_R, OP_ARG_N},
-    ["FORPREP"]  = {32, MODE_iAsBx, OP_ARG_R, OP_ARG_N}, ["TFORLOOP"]  = {33, MODE_iABC, OP_ARG_N, OP_ARG_U},
-    ["SETLIST"]  = {34, MODE_iABC, OP_ARG_U, OP_ARG_U},  ["CLOSE"]     = {35, MODE_iABC, OP_ARG_N, OP_ARG_N},
-    ["CLOSURE"]  = {36, MODE_iABx, OP_ARG_U, OP_ARG_N},  ["VARARG"]    = {37, MODE_iABC, OP_ARG_U, OP_ARG_N}
+    --              Idx  Arg Mode     B Mode    C Mode
+    ["MOVE"]      = {0,  MODE_iABC,  OP_ARG_R, OP_ARG_N},
+    ["LOADK"]     = {1,  MODE_iABx,  OP_ARG_K, OP_ARG_N},
+    ["LOADBOOL"]  = {2,  MODE_iABC,  OP_ARG_U, OP_ARG_U},
+    ["LOADNIL"]   = {3,  MODE_iABC,  OP_ARG_R, OP_ARG_N},
+    ["GETUPVAL"]  = {4,  MODE_iABC,  OP_ARG_U, OP_ARG_N},
+    ["GETGLOBAL"] = {5,  MODE_iABx,  OP_ARG_K, OP_ARG_N},
+    ["GETTABLE"]  = {6,  MODE_iABC,  OP_ARG_R, OP_ARG_K},
+    ["SETGLOBAL"] = {7,  MODE_iABx,  OP_ARG_K, OP_ARG_N},
+    ["SETUPVAL"]  = {8,  MODE_iABC,  OP_ARG_U, OP_ARG_N},
+    ["SETTABLE"]  = {9,  MODE_iABC,  OP_ARG_K, OP_ARG_K},
+    ["NEWTABLE"]  = {10, MODE_iABC,  OP_ARG_U, OP_ARG_U},
+    ["SELF"]      = {11, MODE_iABC,  OP_ARG_R, OP_ARG_K},
+    ["ADD"]       = {12, MODE_iABC,  OP_ARG_K, OP_ARG_K},
+    ["SUB"]       = {13, MODE_iABC,  OP_ARG_K, OP_ARG_K},
+    ["MUL"]       = {14, MODE_iABC,  OP_ARG_K, OP_ARG_K},
+    ["DIV"]       = {15, MODE_iABC,  OP_ARG_K, OP_ARG_K},
+    ["MOD"]       = {16, MODE_iABC,  OP_ARG_K, OP_ARG_K},
+    ["POW"]       = {17, MODE_iABC,  OP_ARG_K, OP_ARG_K},
+    ["UNM"]       = {18, MODE_iABC,  OP_ARG_R, OP_ARG_N},
+    ["NOT"]       = {19, MODE_iABC,  OP_ARG_R, OP_ARG_N},
+    ["LEN"]       = {20, MODE_iABC,  OP_ARG_R, OP_ARG_N},
+    ["CONCAT"]    = {21, MODE_iABC,  OP_ARG_R, OP_ARG_R},
+    ["JMP"]       = {22, MODE_iAsBx, OP_ARG_R, OP_ARG_N},
+    ["EQ"]        = {23, MODE_iABC,  OP_ARG_K, OP_ARG_K},
+    ["LT"]        = {24, MODE_iABC,  OP_ARG_K, OP_ARG_K},
+    ["LE"]        = {25, MODE_iABC,  OP_ARG_K, OP_ARG_K},
+    ["TEST"]      = {26, MODE_iABC,  OP_ARG_R, OP_ARG_U},
+    ["TESTSET"]   = {27, MODE_iABC,  OP_ARG_R, OP_ARG_U},
+    ["CALL"]      = {28, MODE_iABC,  OP_ARG_U, OP_ARG_U},
+    ["TAILCALL"]  = {29, MODE_iABC,  OP_ARG_U, OP_ARG_U},
+    ["RETURN"]    = {30, MODE_iABC,  OP_ARG_U, OP_ARG_N},
+    ["FORLOOP"]   = {31, MODE_iAsBx, OP_ARG_R, OP_ARG_N},
+    ["FORPREP"]   = {32, MODE_iAsBx, OP_ARG_R, OP_ARG_N},
+    ["TFORLOOP"]  = {33, MODE_iABC,  OP_ARG_N, OP_ARG_U},
+    ["SETLIST"]   = {34, MODE_iABC,  OP_ARG_U, OP_ARG_U},
+    ["CLOSE"]     = {35, MODE_iABC,  OP_ARG_N, OP_ARG_N},
+    ["CLOSURE"]   = {36, MODE_iABx,  OP_ARG_U, OP_ARG_N},
+    ["VARARG"]    = {37, MODE_iABC,  OP_ARG_U, OP_ARG_N}
   }
 }
 
 --// BytecodeEmitter Constructor //--
 function BytecodeEmitter.new(mainProto)
   --// Type Checking //--
-  assert(type(mainProto) == "table", "Expected table for 'mainProto', got " .. type(mainProto))
-  assert(mainProto.code and mainProto.constants, "Expected a valid Lua function prototype for 'mainProto'")
+  assert(
+    type(mainProto) == "table",
+    "Expected table for 'mainProto', got " .. type(mainProto)
+  )
+  assert(
+    mainProto.code and mainProto.constants,
+    "Expected a valid Lua function prototype for 'mainProto'"
+  )
 
   --// Instance //--
   local self = setmetatable({}, BytecodeEmitter)
@@ -3573,7 +3621,8 @@ function BytecodeEmitter:validateOperand(value, min, max, operandName, instructi
   if value < min or value > max then
     error(
       string.format(
-        "BytecodeEmitter: Operand %s overflow in instruction '%s'. Got %d. Valid range is %d to %d.",
+        "BytecodeEmitter: Operand %s overflow in instruction '%s'."
+        .. " Got %d. Valid range is %d to %d.",
         operandName, instructionName, value, min, max
       )
     )
