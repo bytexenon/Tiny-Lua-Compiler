@@ -8,4 +8,3 @@ call_parentheses = "Always"
 collapse_simple_statement = "Never"
 space_after_function_names = "Never"
 block_newline_gaps = "Never"
-remove_trailing_whitespace = true
