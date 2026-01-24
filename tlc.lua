@@ -71,41 +71,164 @@ local function makePatternLookup(pattern)
   return lookup
 end
 
---[[
-    ============================================================================
-                                      (/^▽^)/
-                                   THE TOKENIZER!
-    ============================================================================
-
-    The First Stage of Compilation: Breaking Code Into Bite-Sized Pieces
-
-    Think of the tokenizer (also called a lexical analyzer or scanner) as a
-    factory machine that scans raw text (your Lua source code) character by
-    character and outputs a stream of neatly labeled tokens - the fundamental
-    units of meaning in the language. It's like splitting a sentence into
-    individual words and punctuation marks, but for programming languages.
---]]
+-- ============================================================================
+--                                   (/^▽^)/
+--                                 THE TOKENIZER!
+-- ============================================================================
+--
+-- The First Stage of Compilation: Breaking Code Into Bite-Sized Pieces
+--
+-- What is Tokenization?
+-- ---------------------
+-- Think of the tokenizer (also called a lexical analyzer or scanner) as a
+-- factory machine that scans raw text (your Lua source code) character by
+-- character and outputs a stream of neatly labeled tokens - the fundamental
+-- units of meaning in the language.
+--
+-- It's like splitting a sentence into individual words and punctuation marks,
+-- but for programming languages.
+--
+-- Example:
+--   Input:  "local x = 42 + y"
+--   Output: [Keyword:local] [Identifier:x] [Equals] [Number:42]
+--           [Operator:+] [Identifier:y]
+--
+-- Why Separate Tokenization from Parsing?
+-- ----------------------------------------
+-- You might wonder: why not parse the code directly character by character?
+-- The answer is SEPARATION OF CONCERNS:
+--
+-- 1. TOKENIZER'S JOB: Recognize lexical patterns ("this looks like a number")
+--     - Is "123" a valid number? Yes.
+--     - Is "0xFF" a valid hex number? Yes.
+--     - Is "while" a keyword or variable? Keyword.
+--
+-- 2. PARSER'S JOB: Recognize syntactic structure ("this looks like an if-statement")
+--     - Does "if x then ... end" follow the grammar rules? Yes.
+--     - What about "if x end"? No, missing "then".
+--
+-- By separating these concerns, each component becomes simpler and more
+-- maintainable. The tokenizer doesn't need to know about if-statements,
+-- and the parser doesn't need to know that "0xFF" is hexadecimal.
+--
+-- Performance Matters!
+-- -------------------
+-- Tokenization is the TIGHTEST LOOP in the entire compiler - it runs once
+-- for every single character in your source code. For a 1000-line program,
+-- that's 50,000+ character reads!
+--
+-- This is why TLC uses several performance tricks:
+-- - Pre-computed pattern lookup tables (no regex in the hot path)
+-- - Trie-based operator matching (O(k) where k = operator length)
+-- - Strategic separation of "safe" vs "unsafe" punctuation, to minimize
+--   expensive multi-character operator checks.
+-- - string.find usage for bulk consumption of known patterns (faster than
+--   manually scanning character by character).
 
 --* Tokenizer *--
 
 -- The main object responsible for scanning the source code string
 -- and producing a list of tokens.
 local Tokenizer = {}
-Tokenizer.__index = Tokenizer -- Set up for method calls via `.`
+Tokenizer.__index = Tokenizer
 
 Tokenizer.CONFIG = {
   -- Single-character tokens.
-  -- These are the simplest tokens to parse: if we see one of these characters,
-  -- we immediately know what token it is without looking ahead.
+  --
+  -- It's the main lookup table for single-character tokens, it includes
+  -- tokens that are only safe to tokenize alone (e.g., not part of multi-char tokens).
+  -- The split between SAFE and UNSAFE punctuation allows for faster lookups, as we can
+  -- get more common tokens (like parentheses and commas) out of the way quickly, without
+  -- having to check for multi-character operators.
   -- stylua: ignore
-  PUNCTUATION = {
-    [":"] = "Colon",       [";"] = "Semicolon",
-    [","] = "Comma",       ["."] = "Dot",
-    ["("] = "LeftParen",   [")"] = "RightParen",
-    ["{"] = "LeftBrace",   ["}"] = "RightBrace",
-    ["["] = "LeftBracket", ["]"] = "RightBracket",
+SAFE_  PUNCTUATION = {
+    [":"] = "Colon",        [";"] = "Semicolon",
+    ["("] = "LeftParen",    [")"] = "RightParen",
+    ["{"] = "LeftBrace",    ["}"] = "RightBrace",
+    ["]"] = "RightBracket", [","] = "Comma",
+
+    -- Excluded:
+    --     ["["] = "LeftBracket" - Can start long strings
+    -- ["."] = "Dot"         - Can start ".." or "..."
+    -- ["="] = "Equals"      - Can start "=="
+  },
+
+  -- Single-character tokens that can be part of multi-character tokens.
+  -- These require extra checks to see if they form longer operators, and
+  -- they must be checked after multi-character operators are attempted,
+  -- which are slow to check, so we separate them out for performance.
+  -- stylua: ignore
+  UNSAFE_PUNCTUATION = {
+    ["["] = "LeftBracket",
+    ["."] = "Dot",
     ["="] = "Equals"
   },
+
+  -- Operator Trie (Prefix Tree)
+  -- ============================
+  -- This solves the "Longest Prefix Match" problem for operators.
+  --
+  -- The Problem:
+  -- ------------
+  -- When the tokenizer sees a '<' character, it needs to decide:
+  --   - Is it the operator '<' (less than)?
+  --   - Or the start of '<=' (less than or equal)?
+  --
+  -- A naive approach would be:
+  --   if current == '<' and next == '=' then
+  --     return "<="
+  --   else
+  --     return "<"
+  --   end
+  --
+  -- But this becomes messy with many operators:
+  --   - '.' could be: '.', '..', or '...' (vararg)
+  --   - '=' could be: '=' or '=='
+  --   - '~' could be: '~' (error in Lua) or '~=' (not equal)
+  --
+  -- You'd need complex nested if-statements for each character.
+  --
+  -- The Solution: Trie (Prefix Tree)
+  -- ---------------------------------
+  -- A trie is a tree where each node represents a character.
+  -- Walking from root to leaf spells out a complete operator.
+  --
+  -- Visual representation of our operator trie:
+  --
+  --           [root]
+  --           /  |  \
+  --         <   =   .
+  --        /    |    \
+  --       =    =      .
+  --     (<=) (==)    (..)
+  --
+  -- Algorithm (Longest Prefix Matching):
+  -- 1. Start at the root
+  -- 2. Look at current character, follow that edge if it exists
+  -- 3. If the current node is marked as valid operator, remember it
+  -- 4. Keep going as long as edges exist
+  -- 5. Return the longest valid operator found
+  --
+  -- Example: Tokenizing "<=>"
+  -- -------------------------
+  -- Position 0: '<' -> Found node, it's valid operator '<', remember it
+  -- Position 1: '=' -> Found node, it's valid operator '<=', remember it
+  -- Position 2: '>' -> No edge exists from current node, STOP
+  -- Result: Consume '<=' (the longest match), leave '>' for next token
+  --
+  -- Why This Works:
+  -- ---------------
+  -- - O(k) time complexity, where k is the length of the operator (typically 1-2)
+  -- - No backtracking needed
+  -- - Automatically prefers longer operators (greedy matching)
+  -- - Easily extensible (just add to the list, trie auto-generated)
+  --
+  --
+  -- stylua: ignore
+  OPERATOR_TRIE = makeTrie({
+    "^",  "*",  "/",  "%",  "+", "-", "<", ">", "#", -- Single-char
+    "<=", ">=", "==", "~=", ".."                     -- Multi-char
+  }),
 
   -- Escape Sequence Mapping.
   -- Maps the character following a backslash '\' to its actual byte value.
@@ -133,37 +256,54 @@ Tokenizer.CONFIG = {
     "nil",      "not",   "or",    "repeat",
     "return",   "then",  "true",  "until",
     "while"
-  }),
-
-  -- Operator Trie.
-  -- A Prefix Tree containing all valid operators.
-  -- Used by `consumeOperator` to perform "Longest Prefix Matching".
-  -- stylua: ignore
-  OPERATOR_TRIE = makeTrie({
-    "^",  "*",  "/",  "%",  "+", "-", "<", ">", "#", -- Single-char
-    "<=", ">=", "==", "~=", ".."                     -- Multi-char
   })
 }
 
--- Character Classification Tables (Pre-computed)
+-- ============================================================================
+--                  CHARACTER CLASSIFICATION OPTIMIZATION
+-- ============================================================================
 --
--- Tokenization is the tightest loop in the compiler, running once per character.
--- Calling Lua's pattern matcher (`string.match`) inside this loop is too slow.
+-- The Performance Problem
+-- -----------------------
+-- The Tokenizer is the slowest component of TLC, it runs a check for every character
+-- in the source code. For a typical 1000-line program (~50KB), that's 50,000+ checks!
+-- In order to keep the compiler fast, we need to optimize these character checks.
 --
--- Instead, we pre-calculate the classification for every possible byte (0-255).
--- Checking `if PATTERNS.DIGIT[char]` becomes a simple array lookup, which is
--- orders of magnitude faster than regex matching.
+-- Naive approaches (what NOT to do):
+--   function isDigit(char)
+--     return string.match(char, "%d") ~= nil -- SLOW!
+--   end
+--
+--   function isDigit(char)
+--     return char == "0" or char == "1" or ... or char == "9" -- UGLY AND EVEN SLOWER!
+--   end
+--
+-- These methods are slow because:
+-- 1. `string.match` involves pattern matching overhead plus a function call,
+--    those are slow when used for every character 50,000 times per file.
+--
+-- 2. Long chains of `or` comparisons are inefficient and hard to maintain,
+--    performance tests show that it becomes more efficient to use a
+--    lookup table if there are 3 or more comparisons.
+--
+-- The Solution: Pre-computed Lookup Tables
+-- -----------------------------------------
+-- Since a byte can only have 256 possible values (0-255), we can pre-calculate
+-- the result of EVERY possible pattern match at initialization time.
+--
+-- Instead of calling `string.match(char, "%d")` 50,000 times, we:
+-- 1. Calculate it 256 times at startup: makePatternLookup("%d")
+-- 2. Store results in a table: DIGIT = {["0"]=true, ["1"]=true, ..., ["9"]=true}
+-- 3. Use O(1) table lookup: if self.PATTERNS.DIGIT[char] then ...
+--
 -- stylua: ignore
 Tokenizer.PATTERNS = {
-  SPACE            = makePatternLookup("%s"),         -- Whitespace
-  DIGIT            = makePatternLookup("%d"),         -- 0-9
-  HEX_DIGIT        = makePatternLookup("[%da-fA-F]"), -- 0-9, a-f
-  IDENTIFIER       = makePatternLookup("[%a%d_]"),    -- Valid inside identifier
-  IDENTIFIER_START = makePatternLookup("[%a_]")       -- Valid start of identifier
+  SPACE            = makePatternLookup("%s"),   -- Whitespace (space, newline, etc.)
+  DIGIT            = makePatternLookup("%d"),   -- 0-9
+  IDENTIFIER_START = makePatternLookup("[%a_]") -- a-z, A-Z, underscore
 }
 
 --// Tokenizer Constructor //--
--- Creates a new Tokenizer instance for a given source code string.
 function Tokenizer.new(code)
   --// Type Checking //--
   assert(
@@ -176,19 +316,11 @@ function Tokenizer.new(code)
   -- This grants the instance access to all methods defined in the Tokenizer
   -- class (like `consume`, `getNextToken`, `tokenize`, etc.) via prototypal
   -- inheritance, avoiding the need to copy methods for each instance.
-  local self = setmetatable({}, Tokenizer)
-
-  --// Initialization //--
-  self.code = code
-
-  -- Initialize the pointer to the current character position. Lua uses
-  -- 1-based indexing for strings and tables, so we start at the first character.
-  self.curCharPos = 1
-
-  -- Initialize the current character being processed.
-  self.curChar = code:sub(1, 1)
-
-  return self
+  return setmetatable({
+    code       = code,
+    curChar    = code:sub(1, 1),
+    curCharPos = 1,
+  }, Tokenizer)
 end
 
 --// Character Navigation //--
@@ -203,11 +335,6 @@ function Tokenizer:lookAhead(n)
 end
 
 -- Consumes (advances past) 'n' characters in the character stream.
--- This is the primary way the tokenizer moves forward after identifying
--- or skipping characters/tokens. Updates `curCharPos` and `curChar`.
--- Returns the new current character after consumption.
--- Includes a safety check against infinite loops (e.g., if somehow
--- neither old nor new char is non-nil, which implies no progress).
 function Tokenizer:consume(n)
   -- Simple safety check: if we're trying to reach past the end of the stream,
   -- we should throw an error. This prevents infinite loops in the tokenizer.
@@ -224,192 +351,42 @@ function Tokenizer:consume(n)
   -- Update the tokenizer's state.
   self.curCharPos = nextCharPos
   self.curChar    = nextChar
-
-  return nextChar
 end
 
--- Consumes exactly one character, but only if it matches the expected character.
--- Used for consuming specific punctuation like '(' or '=' after identifying
--- a token kind that implies the next character must be that specific one.
--- Throws an error if the current character doesn't match the expectation.
-function Tokenizer:consumeCharacter(character)
-  if self.curChar == character then
-    return self:consume(1) -- Match! Consume the character and move on.
-  end
-
-  -- No match? Syntax error detected at the lexical level.
-  -- (An actual Tokenizer would include line/column info here for better error reporting)
-  error(
-    "Expected character '"
-    .. character ..
-    "', but found: '"
-    .. tostring(self.curChar) ..
-    "'"
-  )
-end
-
---// Character Checkers //--
--- These functions use the pre-calculated pattern lookup tables
--- for efficient O(1) checks of individual character properties.
-
--- Checks if a given character is a standard whitespace character.
-function Tokenizer:isWhitespace(char)
-  return self.PATTERNS.SPACE[char]
-end
-
---- Checks if a given character is a newline character.
-function Tokenizer:isNewlineCharacter(char)
-  return char == "\n"
-end
-
--- Checks if a given character is a digit (0-9).
-function Tokenizer:isDigit(char)
-  return self.PATTERNS.DIGIT[char]
-end
-
--- Checks if a given character is a valid hexadecimal digit (0-9, a-f, A-F).
--- Used when scanning hexadecimal number literals (e.g., 0xFF).
-function Tokenizer:isHexadecimalNumber(char)
-  return self.PATTERNS.HEX_DIGIT[char]
-end
-
--- Checks if a given character is valid as the first character of an identifier.
--- Identifiers must start with a letter or an underscore.
-function Tokenizer:isIdentifierStart(char)
-  return self.PATTERNS.IDENTIFIER_START[char]
-end
-
--- Checks if a given character is valid after the first character of an identifier.
--- Identifiers can contain letters, digits, or underscores.
-function Tokenizer:isIdentifier(char)
-  return self.PATTERNS.IDENTIFIER[char]
+function Tokenizer:setCurrentPosition(pos)
+  self.curCharPos = pos
+  self.curChar    = self.code:sub(pos, pos)
 end
 
 --// Multi-Character Checkers //--
--- These functions look at the current character and potentially the next few
--- characters to determine if they collectively form the start of a larger
--- lexical element like a number, vararg, comment, or string.
 
--- Checks if the current character sequence suggests the start of a number.
--- This can be a digit, or a decimal point followed by a digit.
-function Tokenizer:isNumberStart()
-  local curChar = self.curChar
-  return (
-    self:isDigit(curChar) -- Starts with a digit (e.g., 123, 1.0).
-    or (
-      -- Starts with a decimal point followed by a digit (e.g., .5).
-      -- This matches patterns like ".5" but not just ".".
-      curChar == "." and self:isDigit(self:lookAhead(1))
-    )
-  )
-end
-
--- Checks if the current character sequence is the prefix for a hexadecimal number.
--- This is specifically the "0x" or "0X" sequence.
+-- Checks if the current character and the next character form the
+-- prefix of a hexadecimal number (0x or 0X).
 function Tokenizer:isHexadecimalNumberPrefix()
+if self.curChar == "0" then
   local nextChar = self:lookAhead(1)
-  return self.curChar == "0" and (
-    nextChar == "x" or nextChar == "X"
-  )
-end
-
--- Checks if the current character sequence is the vararg literal "...".
-function Tokenizer:isVararg()
-  return self.curChar       == "."
-      and self:lookAhead(1) == "."
-      and self:lookAhead(2) == "."
-end
-
--- Checks if the current character sequence is the start of a comment "--".
-function Tokenizer:isComment()
-  return self.curChar       == "-"
-      and self:lookAhead(1) == "-"
-end
-
--- Checks if the current character sequence is the start of a string literal.
--- This can be a single quote ('), double quote ("), or the start of a
--- long string (`[` followed by `[` or `=`).
-function Tokenizer:isString()
-  local curChar  = self.curChar
-  local nextChar = self:lookAhead(1)
-  -- Simple strings start with single or double quotes.
-  return (curChar == '"' or curChar == "'")
-      -- Long strings start with `[` followed by `[` or `=`.
-      or (curChar == "[" and (
-        nextChar == "[" or nextChar == "="
-      ))
+  return nextChar == "x" or nextChar == "X"
+  end
 end
 
 --// Utils //--
--- These are helper functions used internally by the consumers
--- for specific parsing tasks within tokens (like strings or comments).
 
 -- Calculates the "depth" of a long string or comment delimiter.
--- This is the number of '=' signs between the outer brackets,
--- e.g., `[==[...]==]` has a depth of 2.
--- and `[[...]]` has a depth of 0.
--- Returns the depth (an integer >= 0).
+-- This counts how many '=' characters follow the initial '['.
+-- For example:
+--   [==[  -> depth of 2
+--   [=[   -> depth of 1
+--   [[    -> depth of 0
 function Tokenizer:calculateDelimiterDepth()
-  local depth = 0
-  while self.curChar == "=" do
-    depth = depth + 1
-    self:consume(1)
+  -- Find how many '=' characters follow the initial '['.
+  -- NOTE: In this case, using `string.find` is faster than
+  -- manually scanning character by character.
+  local startMatchPos, endMatchPos = string.find(self.code, "^=*", self.curCharPos)
+  if not startMatchPos then
+    return 0
   end
 
-  return depth
-end
-
--- Consumes ending delimiters for long strings or comments.
-function Tokenizer:consumeUntilEndingDelimiter(depth)
-  local startPos = self.curCharPos
-
-  while true do
-    if self.curChar == "]" then
-      self:consume(1) -- Consume the "]".
-      local depthMatch = self:calculateDelimiterDepth()
-      if self.curChar == "]" and depthMatch == depth then
-        -- Consume the closing brackets and return the string.
-        self:consume(1) -- Consume the "]".
-        return self.code:sub(startPos, self.curCharPos - depth - 3)
-        -- -3 is to account for the two closing brackets and the last character.
-      end
-
-    -- Check if it's end of stream.
-    elseif self.curChar == "" then
-      -- End of stream reached without finding the delimiter.
-      error("Unexpected end of input while searching for ending delimiter")
-    else
-      -- Consume the current character and move to the next one in the stream.
-      self:consume(1)
-    end
-  end
-end
-
--- Consumes a numeric escape sequence (\ddd) and returns the corresponding character.
--- Expects the current character to be the first digit after the '\'.
--- Validates that the number is within the byte range (0-255).
-function Tokenizer:consumeNumericEscapeSequence(firstDigit)
-  local numberString = firstDigit
-
-  -- Consume up to two more digits.
-  for _ = 1, 2 do
-    local nextChar = self:lookAhead(1)
-    if not self:isDigit(nextChar) then
-      -- Stop if the next char isn't a digit.
-      break
-    end
-    numberString = numberString .. nextChar -- Append the digit to the string.
-    self:consume(1) -- Consume the digit.
-  end
-
-  -- Convert the collected digits to a number.
-  local number = tonumber(numberString)
-  if not number or number > 255 then
-    error("escape sequence too large near '\\" .. numberString .. "'")
-  end
-
-  -- Return the character corresponding to the number code
-  return string.char(number)
+  return endMatchPos - startMatchPos + 1
 end
 
 --// Consumers //--
@@ -417,123 +394,194 @@ end
 -- from the character stream and returning its value. They handle the
 -- internal structure of the token (like string contents or number format).
 
--- Consumes a sequence of one or more whitespace characters from the input stream.
--- This function advances the tokenizer's position (`curCharPos` and `curChar`)
--- past any contiguous block of whitespace (spaces, tabs, newlines, etc.).
+-- Consumes whitespace characters (spaces, tabs, newlines) from the input stream.
+-- Does not return the consumed whitespace, just advances the position.
 function Tokenizer:consumeWhitespace()
-  while self:isWhitespace(self.curChar) do
-    self:consume(1) -- Advance the stream position by one character.
-  end
+  -- NOTE: In this case, using `string.find` is faster than
+  -- manually scanning character by character.
+  local _, endPos = string.find(self.code, "^%s*", self.curCharPos + 1)
+  endPos = endPos or #self.code
+
+  -- Update the state.
+  self:setCurrentPosition(endPos + 1)
 
   -- No return value; the function's effect is modifying the tokenizer's state.
 end
 
--- Consumes an identifier (variable name, function name, etc.) from the input stream.
--- An identifier starts with a letter or underscore, followed by any combination
--- of letters, digits, or underscores.
+-- Consumes an identifier from the input stream.
+-- An identifier starts with a letter or underscore, followed by letters,
+-- digits, or underscores.
 function Tokenizer:consumeIdentifier()
   local startPos = self.curCharPos
 
-  while self:isIdentifier(self.curChar) do
-    self:consume(1)
-  end
+  -- NOTE: In this case, using `string.find` is faster than
+  -- manually scanning character by character.
+  local _, endPos = string.find(self.code, "^[%a%d_]*", startPos + 1)
+  endPos = endPos or #self.code
 
-  return self.code:sub(startPos, self.curCharPos - 1)
+  -- Update the state.
+  self:setCurrentPosition(endPos + 1)
+
+  local identifier = self.code:sub(startPos, endPos)
+  return identifier
 end
 
+-- Consumes a number literal from the input stream, returns
+-- a string representation of the number. Must be validated
+-- using tonumber() after consumption.
+--
+-- Handles all kinds of Lua number formats:
+-- - Decimal integers (e.g., 42)
+-- - Floating point numbers (e.g., 3.14, .5, 42.)
+-- - Hexadecimal numbers (e.g., 0xFF, 0X1A3)
+-- - Scientific notation (e.g., 1e10, 3.14E-2)
 function Tokenizer:consumeNumber()
   local startPos = self.curCharPos
 
   -- Hexadecimal number case.
   -- 0[xX][0-9a-fA-F]+
   if self:isHexadecimalNumberPrefix() then
-    self:consume(2) -- Consume the "0x" part.
-    while self:isHexadecimalNumber(self.curChar) do
-      self:consume(1)
-    end
-    return self.code:sub(startPos, self.curCharPos - 1)
+    local _, endPos = string.find(self.code, "^[%da-fA-F]+", self.curCharPos + 2)
+    if not endPos then
+      error(
+        string.format(
+          "malformed number near '%s'",
+self.code:sub(startPos, self.curCharPos - 1)
+)
+      )
   end
 
-  -- [0-9]*
-  while self:isDigit(self.curChar) do
-    self:consume(1)
+  -- Update the state.
+    self:setCurrentPosition(endPos + 1)
+
+    local numberString = self.code:sub(startPos, self.curCharPos - 1)
+    return numberString
   end
+
+  -- Consume the integer part.
+  -- The first character is guaranteed to be a digit here,
+  -- as we checked this before calling `consumeNumber`.
+  local _, endPos = string.find(self.code, "^[0-9]*", startPos)
+  endPos = endPos or #self.code
 
   -- Floating point number case.
-  -- \.[0-9]+
-  if self.curChar == "." then
-    self:consume(1) -- Consume the ".".
-
-    -- Lua allows you to end a number with a decimal point (e.g., "42."),
-    -- so this check doesn't expect any digits after the decimal.
-    while self:isDigit(self.curChar) do
-      self:consume(1)
-    end
+  -- \.[0-9]*
+  local nextChar = self.code:sub(endPos + 1, endPos + 1)
+  if nextChar == "." then
+    _, endPos = string.find(self.code, "^[0-9]*", endPos + 2)
+    endPos = endPos or #self.code
   end
 
   -- Exponential (scientific) notation case.
   -- [eE][+-]?[0-9]+
-  if self.curChar == "e" or self.curChar == "E" then
-    self:consume(1) -- Consume the "e" or "E" characters.
-    if self.curChar == "+" or self.curChar == "-" then
-      self:consume(1) -- Consume an optional sign character.
-    end
+  nextChar = self.code:sub(endPos + 1, endPos + 1)
+  if nextChar == "e" or nextChar == "E" then
+    _, endPos = string.find(self.code, "^[+-]?[0-9]+", endPos + 2)
 
-    -- Exponent part.
-    while self:isDigit(self.curChar) do
-      self:consume(1)
+    if not endPos then
+      error(
+        string.format(
+          "malformed number near '%s'",
+          self.code:sub(startPos, self.curCharPos - 1)
+        )
+      )
     end
   end
 
-  return self.code:sub(startPos, self.curCharPos - 1)
+  -- Update the state.
+  self:setCurrentPosition(endPos + 1)
+
+  local numberString = self.code:sub(startPos, self.curCharPos - 1)
+  return numberString
 end
 
+-- Consumes a numeric escape sequence (\ddd) from a string literal.
+-- Expects the current character to be the first digit after the '\'.
+-- Validates that the number is within the byte range (0-255).
+function Tokenizer:consumeNumericEscapeSequence()
+  -- [0-9]{1,3}
+  local pattern = "^[0-9][0-9]?[0-9]?"
+  local startPos, endPos = string.find(self.code, pattern, self.curCharPos)
+  local numberString = self.code:sub(startPos, endPos)
+  local number = tonumber(numberString)
+  if not number or number > 255 then
+    error("escape sequence too large near '\\" .. numberString .. "'")
+  end
+
+  -- Update the state.
+  self:setCurrentPosition(endPos + 1)
+
+  return string.char(number)
+end
+
+-- Consumes an escape sequence in a string literal (e.g., \n, \t, \123).
+-- Returns the actual character value represented by the escape sequence.
 function Tokenizer:consumeEscapeSequence()
-  -- Consume the "\" character.
-  self:consumeCharacter("\\")
+self:consume(1) -- Consume the "\" character.
+local curChar = self.curChar
 
-  local convertedChar = self.CONFIG.ESCAPES[self.curChar]
+-- Is it a standard escape sequence? (e.g. \n, \t, etc.)
+  local convertedChar = self.CONFIG.ESCAPES[curChar]
   if convertedChar then
+self:consume(1) -- Consume the escape character.
     return convertedChar
-  elseif self:isDigit(self.curChar) then
-    return self:consumeNumericEscapeSequence(self.curChar)
+  
+  -- Is it a numeric escape sequence? (e.g. \65, \123, etc.)
+  elseif self.PATTERNS.DIGIT[curChar] then
+    return self:consumeNumericEscapeSequence()
   end
 
-  error("invalid escape sequence near '\\" .. self.curChar .. "'")
+  error("invalid escape sequence near '\\" .. curChar .. "'")
 end
 
+-- Consumes a single or double-quoted string literal from the input stream.
+-- Handles escape sequences within the string.
 function Tokenizer:consumeSimpleString()
-  local delimiter = self.curChar
+  local quoteChar = self.curChar
   local newString = {}
   self:consume(1) -- Consume the quote.
 
-  while self.curChar ~= delimiter do
-    -- Check if it's end of stream.
-    if self.curChar == "" then
-      error("Unclosed string")
-    elseif self.curChar == "\\" then
+-- Consume until the closing quote is found.
+  while self.curChar ~= quoteChar do
+    -- Is it an escape sequence?
+    if self.curChar == "\\" then
       local consumedEscape = self:consumeEscapeSequence()
       table.insert(newString, consumedEscape)
+
+    -- Is it the end of the input?
+    elseif self.curChar == "" then
+      error("Unclosed string")
+
+    -- Regular character.
     else
       table.insert(newString, self.curChar)
+self:consume(1) -- Consume the character.
     end
-    self:consume(1)
-  end
+      end
   self:consume(1) -- Consume the closing quote.
 
   return table.concat(newString)
 end
 
+-- Consumes a long string literal using [[...]] or [=[...]=] syntax.
+-- Automatically skips a leading newline if present (Lua 5.1 behavior).
 function Tokenizer:consumeLongString()
-  self:consumeCharacter("[")
+  self:consume(1) -- Consume the first '['.
   local depth = self:calculateDelimiterDepth()
-  self:consumeCharacter("[")
+  self:consume(depth) -- Consume the '=' characters.
+
+  if self.curChar ~= "[" then
+    error("Invalid long string delimiter")
+  end
+
+  self:consume(1) -- Consume the second '['.
 
   -- Long string starts with a newline?
-  if self:isNewlineCharacter(self.curChar) then
-    -- This is an edge case in the official lexer source.
+  if self.curChar == "\n" then
+    -- If the first character inside the long string is a newline,
+    -- we skip it entirely. This is an edge case in the official lexer source.
     --
-    -- ```
+    -- ```c
     -- static void read_long_string (LexState *ls, SemInfo *seminfo, int sep) {
     --   ...
     --   if (currIsNewline(ls))  /* string starts with a newline? */
@@ -546,30 +594,37 @@ function Tokenizer:consumeLongString()
     self:consume(1)
   end
 
-  local stringValue = self:consumeUntilEndingDelimiter(depth)
+  local stringStartPos = self.curCharPos
+
+  -- Consume the closing delimiter using Lua pattern matching.
+  -- NOTE: In this case, using `string.find` is faster than
+  -- manually scanning character by character.
+  local closingDelimiter = "%]" .. string.rep("=", depth) .. "%]"
+  local startPos, endPos = string.find(self.code, closingDelimiter, self.curCharPos)
+  if not endPos then
+    error("Unclosed long string")
+  end
+  
+  -- Update the state.
+  self:setCurrentPosition(endPos + 1)
+
+  local stringValue = self.code:sub(stringStartPos, startPos - 1)
   return stringValue
 end
 
--- Consumes both long and simple strings.
-function Tokenizer:consumeString()
-  if self.curChar == "[" then
-    return self:consumeLongString()
-  end
-  return self:consumeSimpleString()
-end
-
 -- Consumes an operator token from the input stream.
--- Uses a Trie (prefix tree) to efficiently match the longest possible operator.
--- This handles cases like distinguishing between `<` and `<=` or `.` and `..`
--- without complex lookahead logic.
+-- Uses the operator trie for longest prefix matching.
 function Tokenizer:consumeOperator()
   local node = self.CONFIG.OPERATOR_TRIE
   local operator
 
   -- Walk the trie character by character.
-  local index = 0
+  local startPos   = self.curCharPos
+  local newCharPos = startPos
   while true do
-    local character = self:lookAhead(index)
+-- Optimization: Use `sub` instead of `lookAhead` to
+    -- avoid extra function call overhead in this tight loop.
+    local character = string.sub(self.code, newCharPos, newCharPos)
     node = node[character]
 
     -- If the path doesn't exist in the trie,
@@ -578,39 +633,71 @@ function Tokenizer:consumeOperator()
 
     -- If this node represents a valid operator, remember it.
     -- We keep going to see if there's a longer match (greedy matching).
-    operator = node.value
-    index    = index + 1
+    operator   = node.value
+    newCharPos = newCharPos + 1
   end
 
   -- If no valid operator was found on the path, it's not an operator.
   if not operator then return end
 
   -- Skip over the operator characters.
-  self:consume(#operator)
+  self:consume(newCharPos - startPos)
 
   return operator
 end
 
+-- Consumes a single-line comment (-- ...) until the end of the line.
+-- Does not return the consumed comment, just advances the position.
 function Tokenizer:consumeShortComment()
-  while self.curChar ~= "" and not self:isNewlineCharacter(self.curChar) do
-    self:consume(1)
-  end
+  -- Consume until the end of the line.
+  -- NOTE: In this case, using `string.find` is faster than
+  -- manually scanning character by character.
+  local _, endPos = string.find(self.code, "[^\n]*", self.curCharPos)
+  endPos = endPos or #self.code
+
+  -- Update the state.
+  self:setCurrentPosition(endPos + 1)
 
   -- No return value; the function's effect is modifying the tokenizer's state.
 end
 
+-- Consumes a multi-line comment using --[[...]] or --[=[...]=] syntax.
+-- Falls back to short comment if delimiter pattern doesn't match.
+-- Does not return the consumed comment, just advances the position.
 function Tokenizer:consumeLongComment()
-  self:consumeCharacter("[")
+  self:consume(1) -- Consume the first '['.
+
+  -- Calculate the delimiter depth.
+  local depth = self:calculateDelimiterDepth()
+  self:consume(depth) -- Consume the '=' characters.
+
+  -- Is it not a full delimiter?
   if self.curChar ~= "[" then
+-- Treat it as a short comment instead.
     return self:consumeShortComment()
   end
-  local depth = self:calculateDelimiterDepth()
-  self:consumeCharacter("[")
-  self:consumeUntilEndingDelimiter(depth)
+  
+  self:consume(1) -- Consume the second '['.
+
+  -- Consume the closing delimiter using Lua pattern matching.
+  -- (We're putting the modulo signs around the `]` to escape it in the pattern).
+  --
+  -- NOTE: In this case, using `string.find` is faster than
+  -- manually scanning character by character.
+  local closingDelimiter = "%]" .. string.rep("=", depth) .. "%]"
+  local _, endPos = string.find(self.code, closingDelimiter, self.curCharPos)
+  if not endPos then
+    error("Unclosed long comment")
+  end
+
+  -- Update the state.
+  self:setCurrentPosition(endPos + 1)
 
   -- No return value; the function's effect is modifying the tokenizer's state.
 end
 
+-- Consumes a comment, dispatching between short (--) and long (--[[...]]) comments.
+-- Does not return the consumed comment, just advances the position.
 function Tokenizer:consumeComment()
   self:consume(2) -- Consume the "--".
   if self.curChar == "[" then
@@ -620,56 +707,120 @@ function Tokenizer:consumeComment()
 end
 
 --// Token Consumer Handler //--
+
+-- Consumes and returns tokenKind, tokenValue, tokenRaw for the next
+-- token in the stream. If it returns a nil "tokenKind", it means that
+-- no token was produced (e.g., whitespace or comment), so the caller should
+-- call this method again to get the next token.
+-- "tokenValue" and "tokenRaw" may also be nil for tokens that don't have
+-- associated values (e.g., punctuation).
+--
+-- NOTE: For optimization, the checks in this function are ordered
+-- by expected frequency of occurrence in typical Lua source.
 function Tokenizer:getNextToken()
   local curChar = self.curChar
 
-  -- Skip ignorable elements (whitespace and comments).
-  if self:isWhitespace(curChar) then
+  -- Skip whitespace.
+  if self.PATTERNS.SPACE[curChar] then
     self:consumeWhitespace()
-    return nil -- Return nil to signal that nothing tokenizable was found (skip).
-  elseif self:isComment() then
-    self:consumeComment()
-    return nil -- Return nil to signal that nothing tokenizable was found (skip).
+    curChar = self.curChar
+
+    -- In some cases, whitespace may be the last thing in the stream,
+    -- to not cause an error down the line, we must check if we've reached
+    -- the end of the input after consuming whitespace.
+    if curChar == "" then
+      return nil -- No token produced.
+    end
   end
 
-  -- Process identifiers and reserved words AFTER literals.
-  -- (e.g., "while" shouldn't be tokenized if it's part of a string)
-  if self:isIdentifierStart(curChar) then
+  -- Is it an identifier (variable name, function name, keyword, etc.)?
+  if self.PATTERNS.IDENTIFIER_START[curChar] then
     -- Consume the sequence of valid identifier characters.
     local identifier = self:consumeIdentifier()
 
+-- Is it a keyword? (E.g., "while", "local", "function", etc.)
     if self.CONFIG.KEYWORDS[identifier] then
-      return { kind = "Keyword", value = identifier }
+      return "Keyword", identifier
     end
 
-    -- Fallthrough: If it's not a keyword, it's a regular identifier (e.g. a variable).
-    return { kind = "Identifier", value = identifier }
+    return "Identifier", identifier
+    end
+
+    -- Processes "safe" punctuation first (single-character tokens that
+  -- cannot be part of multi-character tokens).
+  local safeTokenKind = self.CONFIG.SAFE_PUNCTUATION[curChar]
+  if safeTokenKind then
+    self:consume(1) -- Consume the character.
+    return safeTokenKind, nil
+
+  -- Handle short string literals (quoted strings).
+  elseif curChar == '"' or curChar == "'" then
+    local stringLiteral = self:consumeSimpleString()
+    return "String", stringLiteral
+
+  -- Handle long string literals (with [[...]] or [=[...]=], etc.).
+  elseif curChar == "[" then
+    local nextChar = self:lookAhead(1)
+
+    -- Is it really a long string?
+    if nextChar == "[" or nextChar == "=" then
+      local stringLiteral = self:consumeLongString()
+      return "String", stringLiteral
   end
 
   -- Handle numeric literals (decimal, hex, scientific, float).
-  if self:isNumberStart() then
+  elseif self.PATTERNS.DIGIT[curChar] then
     local numberString = self:consumeNumber()
     local numberValue = tonumber(numberString)
 
-    -- Basic check, tonumber handles many errors but not all contextually
-    if numberValue == nil then
-      error("Invalid number format near '" .. numberString .. "'")
+    -- Validate the number conversion.
+    -- If this check ever gets triggered, it indicates that there's
+    -- a bug in the `consumeNumber` implementation, please report it.
+    if not numberValue then
+      error(
+        string.format(
+          "malformed number near '%s'",
+numberString
+        )
+)
     end
 
-    return { kind = "Number", value = numberValue }
-  end
+    return "Number", numberValue, numberString
 
-  -- Handle string literals (simple or long).
-  if self:isString() then
-    local stringLiteral = self:consumeString() -- Consume the string contents.
-    return { kind = "String", value = stringLiteral }
-  end
+  -- Is it a comment?
+  elseif curChar == "-" and self:lookAhead(1) == "-" then
+    self:consumeComment()
+    return nil -- No token produced.
 
-  -- Handle complex literals or special multi-character tokens.
-  -- Check for vararg "..." before numbers/operators that might start with ".".
-  if self:isVararg() then
+  -- Handle numbers starting with a decimal point and vararg ("...").
+  elseif curChar == "." then
+    local nextChar = self:lookAhead(1)
+
+    -- Is it a number starting with a decimal point? (e.g., .5, .123)
+    -- NOTE: We repeat the logic here for performance.
+  if self.PATTERNS.DIGIT[nextChar] then
+    local numberString = self:consumeNumber()
+      local numberValue = tonumber(numberString)
+
+      -- Validate the number conversion.
+      -- If this check ever gets triggered, it indicates that there's
+      -- a bug in the `consumeNumber` implementation, please report it.
+      if not numberValue then
+        error(
+          string.format(
+            "malformed number near '%s'",
+            numberString
+          )
+        )
+      end
+
+      return "Number", numberValue, numberString
+
+    -- Is it a vararg ("...")?
+    elseif nextChar == "." and self:lookAhead(2) == "." then
     self:consume(3) -- Consume the "...".
-    return { kind = "Vararg" }
+    return "Vararg", nil
+    end
   end
 
   -- Attempt to consume a symbolic operator using the trie.
@@ -677,22 +828,27 @@ function Tokenizer:getNextToken()
   local operator = self:consumeOperator()
   if operator then
     -- If an operator was matched and consumed, return it as a token.
-    return { kind = "Operator", value = operator }
+    return "Operator", operator
   end
 
-  -- If no other token kinds matched, look up the current character
-  -- in the self.CONFIG.PUNCTUATION lookup table. This handles single-character
-  -- tokens like punctuation, separators, or other special characters.
-  local tokenKind = self.CONFIG.PUNCTUATION[curChar]
-  if tokenKind then
+  -- Handle "unsafe" punctuation (single-character tokens that
+  -- could be part of multi-character tokens).
+  local unsafeTokenKind = self.CONFIG.UNSAFE_PUNCTUATION[curChar]
+  if unsafeTokenKind then
     self:consume(1) -- Consume the character.
-    return { kind = tokenKind }
+    return unsafeTokenKind, nil
   end
 
   -- If we reach this point, it means the current character doesn't match
   -- any known token kind. This is an error condition, as the character
   -- is not valid in the Lua language syntax.
-  error("Unexpected character '" .. curChar .. "' at position " .. self.curCharPos)
+  error(
+    string.format(
+"Unexpected character '%s' at position %d",
+      tostring(curChar),
+self.curCharPos
+    )
+)
 end
 
 --// Tokenizer Main Method //--
@@ -707,14 +863,18 @@ function Tokenizer:tokenize()
   -- Loop through the character stream as long as there are characters left.
   while self.curChar ~= "" do
     -- Get the next token (or nil if whitespace/comment was skipped).
-    local token = self:getNextToken()
+    local tokenKind, tokenValue, tokenRaw = self:getNextToken()
 
     -- If `getNextToken` returned a valid token (not nil)...
-    if token then
+    if tokenKind then
       -- Add the token to our list of results.
       -- Note: We don't use table.insert here as this is a very performance-critical
       -- section of the code. Using a simple index is faster for sequential inserts.
-      tokens[tokenIndex] = token
+      tokens[tokenIndex] = {
+        kind  = tokenKind,
+        value = tokenValue,
+        raw   = tokenRaw
+      }
       tokenIndex = tokenIndex + 1
     end
   end
