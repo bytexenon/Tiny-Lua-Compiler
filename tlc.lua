@@ -1,19 +1,55 @@
---[[
-  Tiny Lua Compiler (TLC)
-  =======================
-
-  A minimal, educational compiler for Lua 5.1, written in Lua 5.1.
-
-  This project demonstrates the full compilation pipeline:
-  1. Tokenizer/Lexer: Converts source text into a stream of tokens.
-  2. Parser: Organizes tokens into an Abstract Syntax Tree (AST).
-  3. Code Generator: Translates the AST into a Function Prototype (proto).
-  4. Bytecode Emitter: (Optional) Serializes the prototype to binary code (bytecode).
-  5. Virtual Machine: Executes the prototype directly.
-
-  Despite its small size (~4000 lines), it implements a register-based VM,
-  lexical scoping, upvalues (closures), and proper operator precedence.
---]]
+--------------------------------------------------------------------------------
+-- TINY LUA COMPILER (TLC)
+--------------------------------------------------------------------------------
+-- URL:     https://github.com/bytexenon/tiny-lua-compiler
+-- License: MIT (free to use and modify, attribution appreciated)
+-- Version: 1.0.0
+--------------------------------------------------------------------------------
+-- DESCRIPTION:
+--   A minimal, educational compiler for Lua 5.1, written in pure Lua 5.1.
+--   It allows for dynamic compilation and execution of Lua code within a Lua
+--   environment without the need to rely on the `load` or `loadstring` functions.
+--   It features a high-performance lexer, complete parser, proper operator precedence,
+--   lexical scoping, a bytecode generator, and a register-based virtual machine.
+--
+--   Pipeline Stages:
+--     1. Tokenizer:        Source Text -> Token Stream
+--     2. Parser:           Tokens      -> Abstract Syntax Tree (AST)
+--     3. Code Generator:   AST         -> Function Prototype
+--     4. Bytecode Emitter: Prototype   -> Binary Chunk (bytecode string)
+--     5. Virtual Machine:  Prototype   -> Execution
+--
+-- USAGE:
+--   local tlc = require("tlc")
+--   tlc.run("print('Hello from TLC!')")
+--
+-- API SUMMARY:
+--   High-Level
+--     tlc.tokenize(code) ....................... Returns Token List
+--     tlc.parse(code) .......................... Returns AST
+--     tlc.compileToProto(code) ................. Returns Prototype
+--     tlc.compile(code) ........................ Returns Bytecode String
+--     tlc.run(code) ............................ Executes Code
+--
+--   Low-Level (Explicit Stages)
+--     tlc.parseTokens(tokens) .................. Returns AST
+--     tlc.generate(ast) ........................ Returns Prototype
+--     tlc.emit(proto) .......................... Returns Bytecode String
+--     tlc.execute(proto) ....................... Executes Prototype
+--
+--   Manual Pipeline (All Stages)
+--     tlc.Tokenizer.new(code):tokenize()
+--     tlc.Parser.new(tokens):parse()
+--     tlc.CodeGenerator.new(ast):generate()
+--     tlc.BytecodeEmitter.new(proto):emit()
+--     tlc.VirtualMachine.new(proto):run()
+--
+-- NOTE:
+--   * Internal component classes should be accessed via high-level API.
+--   * TLC can run on all Lua versions (5.1 to 5.5), but bytecode generation
+--     targets Lua 5.1 specifically.
+--------------------------------------------------------------------------------
+-- stylua: ignore start
 
 -- Converts a list into a Set (lookup table) for fast existence checking.
 --
