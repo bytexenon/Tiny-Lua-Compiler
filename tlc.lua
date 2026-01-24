@@ -3170,6 +3170,10 @@ function CodeGenerator:processForGenericStatement(node)
   self:leaveScope()
 end
 
+-- R(A) - internal loop variable (control variable)
+-- R(A+1) - limit
+-- R(A+2) - step
+-- R(A+3) - user loop variable (copied from R(A) every iteration)
 function CodeGenerator:processForNumericStatement(node)
   local varName   = node.variable
   local startExpr = node.start
@@ -3192,11 +3196,15 @@ function CodeGenerator:processForNumericStatement(node)
   end
 
   -- OP_FORPREP [A, sBx]    R(A)-=R(A+2) pc+=sBx
+-- Prepare the internal loop variable by subtracting the step from the start.
   local forPrepInstruction = self:emitInstruction("FORPREP", startRegister, 0)
   local loopStartPC = #self.proto.code
 
-  -- Declare the loop variable.
-  self:declareLocalVariable(varName, startRegister)
+  -- Declare the loop variable in R(A + 3), not R(A).
+  -- We must use the copied "for" variable value instead of
+  -- the actual one, this is because Lua 5.1 numeric for variables
+  -- are read-only.
+  self:declareLocalVariable(varName)
   self:breakable(function()
     self:processBlockNode(body)
 
@@ -3205,6 +3213,11 @@ function CodeGenerator:processForNumericStatement(node)
 
     -- OP_FORLOOP [A, sBx]   R(A)+=R(A+2)
     --                       if R(A) <?= R(A+1) then { pc+=sBx R(A+3)=R(A) }
+--                       (<?= is < or > depending on step sign)
+    --
+    -- Increment the internal loop variable R(A) by the step R(A+2), then jump
+    -- back to the start of the loop if the limit R(A+1) has not been reached,
+    -- copying the new value into the user loop variable R(A+3).
     self:emitInstruction("FORLOOP", startRegister, loopStartPC - loopEndPC - 1)
   end)
   self:leaveScope()
