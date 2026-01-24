@@ -10,44 +10,49 @@ local tlc = require("tlc")
 local INFINITE_LOOP_LIMIT = 15000000
 
 local ESCAPED_CHARACTER_CONVERSIONS = {
-  ["\a"]  = "a",  -- Bell (alert sound)
-  ["\b"]  = "b",  -- Backspace
-  ["\f"]  = "f",  -- Form feed (printer page eject)
-  ["\n"]  = "n",  -- New line
-  ["\r"]  = "r",  -- Carriage return
-  ["\t"]  = "t",  -- Horizontal tab
-  ["\v"]  = "v",  -- Vertical tab
+  ["\a"] = "a", -- Bell (alert sound)
+  ["\b"] = "b", -- Backspace
+  ["\f"] = "f", -- Form feed (printer page eject)
+  ["\n"] = "n", -- New line
+  ["\r"] = "r", -- Carriage return
+  ["\t"] = "t", -- Horizontal tab
+  ["\v"] = "v", -- Vertical tab
 }
 
 --* Local Functions *--
 
 -- Converts special characters in a string to their escaped representations.
 local function sanitizeString(str)
-  return (str:gsub("[\a\b\f\n\r\t\v]", function(escapeChar)
-    return "\\".. ESCAPED_CHARACTER_CONVERSIONS[escapeChar]
-  end))
+  return (
+    str:gsub("[\a\b\f\n\r\t\v]", function(escapeChar)
+      return "\\" .. ESCAPED_CHARACTER_CONVERSIONS[escapeChar]
+    end)
+  )
 end
 
 -- Deep comparison of two tables (or values).
-local function deepCompare(table1, table2, seen)
+local function deepCompare(value1, value2, seen)
   seen = seen or {}
-  if table1 == table2 then return true end
-  if type(table1) ~= "table" or type(table2) ~= "table" then return false end
-  if seen[table1] or seen[table2] then
-    return seen[table1] == table2 or seen[table2] == table1
+  if value1 == value2 then
+    return true
+  elseif type(value1) ~= "table" or type(value2) ~= "table" then
+    return false
+  elseif seen[value1] or seen[value2] then
+    return seen[value1] == value2 or seen[value2] == value1
   end
 
-  seen[table1] = table2
-  seen[table2] = table1
+  seen[value1] = value2
+  seen[value2] = value1
 
-  for i, v1 in pairs(table1) do
-    local v2 = table2[i]
+  for i, v1 in pairs(value1) do
+    local v2 = value2[i]
     if v2 == nil or not deepCompare(v1, v2, seen) then
       return false
     end
   end
-  for i, _ in pairs(table2) do
-    if table1[i] == nil then
+
+  for i, _ in pairs(value2) do
+    if value1[i] == nil then
       return false
     end
   end
@@ -55,13 +60,23 @@ local function deepCompare(table1, table2, seen)
   return true
 end
 
-local function tableToString(tbl)
+-- Converts a value to a string, if it's a table it tries
+-- its best to represent its contents.
+local function extendedTostring(value)
+  if type(value) ~= "table" then
+    return tostring(value)
+  end
+
   local parts = {}
-  for i, v in pairs(tbl) do
-    table.insert(parts, tostring(i).." = "..tostring(v))
+  for i, v in pairs(value) do
+    table.insert(parts, tostring(i) .. " = " .. tostring(v))
   end
 
   return "{" .. table.concat(parts, ", ") .. "}"
+end
+
+local function stripString(str)
+  return str:gsub("^%s*(.-)%s*$", "%1")
 end
 
 --* TLCTest *--
@@ -71,7 +86,7 @@ TLCTest.__index = TLCTest
 function TLCTest.new()
   local self = setmetatable({}, TLCTest)
   self.ranTests = {}
-  self.groups   = {}
+  self.groups = {}
 
   return self
 end
@@ -92,13 +107,19 @@ end
 
 function TLCTest:it(name, func)
   local errorTable = nil
-  local failed     = false
+  local failed = false
 
   if debug and debug.sethook then
-    local function unhook() debug.sethook() end
+    local function unhook()
+      debug.sethook()
+    end
     local function terminateInfiniteLoop()
       unhook()
-      return error("TLCTest: Infinite loop detected after " .. INFINITE_LOOP_LIMIT .. " instructions")
+      return error(
+        "TLCTest: Infinite loop detected after "
+          .. INFINITE_LOOP_LIMIT
+          .. " instructions"
+      )
     end
 
     debug.sethook(terminateInfiniteLoop, "", INFINITE_LOOP_LIMIT)
@@ -108,8 +129,8 @@ function TLCTest:it(name, func)
 
       failed = true
       errorTable = {
-        message   = message,
-        traceback = traceback
+        message = message,
+        traceback = traceback,
       }
     end)
     unhook()
@@ -121,17 +142,19 @@ function TLCTest:it(name, func)
   if failed then
     -- Something went wrong, test failed.
     io.write("\27[41m\27[30m FAIL \27[0m ")
-    table.insert(self.ranTests, { status = "FAIL",
-      name  = name,
-      path  = path,
-      error = errorTable
+    table.insert(self.ranTests, {
+      status = "FAIL",
+      name = name,
+      path = path,
+      error = errorTable,
     })
   elseif not failed then
     -- No error occurred, test passed.
     io.write("\27[42m\27[30m PASS \27[0m ")
-    table.insert(self.ranTests, { status = "PASS",
+    table.insert(self.ranTests, {
+      status = "PASS",
       name = name,
-      path = path
+      path = path,
     })
   end
 
@@ -141,41 +164,40 @@ end
 function TLCTest:assertEqual(b, a, message)
   if a ~= b then
     local msg = ("Expected %s, got %s"):format(tostring(a), tostring(b))
-    if message then msg = message .. " - " .. msg end
+    if message then
+      msg = message .. " - " .. msg
+    end
     return error(msg, 0)
   end
 end
 
-function TLCTest:assertDeepEqual(expected, actual, message)
-  if deepCompare(expected, actual) then return true end
-
-  local actualString = (type(actual) == "table" and tableToString(actual))
-                       or tostring(actual)
-  local expectedString = (type(expected) == "table" and tableToString(expected))
-                         or tostring(expected)
-
-  error("Expected returns do not match actual returns.\n" ..
-        "    Expected: \t '" .. sanitizeString(expectedString) .. "'\n" ..
-        "    Actual: \t '"   .. sanitizeString(actualString)   .. "'",
-        0)
-
-  if message then
-    message = message .. " - " .. message
+function TLCTest:assertDeepEqual(expected, actual)
+  if deepCompare(expected, actual) then
+    return true
   end
 
-  return error(message, 0)
+  local actualString = extendedTostring(actual)
+  local expectedString = extendedTostring(expected)
+
+  error(
+    string.format(
+      "Expected returns do not match actual returns.\n"
+        .. "    Expected: \t '%s'\n"
+        .. "    Actual: \t '%s'",
+      sanitizeString(expectedString),
+      sanitizeString(actualString)
+    ),
+    0
+  )
 end
 
 function TLCTest:compileAndRun(code)
-  local tokens    = tlc.Tokenizer.new(code):tokenize()
-  local ast       = tlc.Parser.new(tokens):parse()
-  local proto     = tlc.CodeGenerator.new(ast):generate()
-  local bytecode  = tlc.BytecodeEmitter.new(proto):emit()
-
-  return loadstring(bytecode)()
+  return tlc.run(code)
 end
 
 function TLCTest:assertCompileError(code)
+  code = stripString(code)
+
   local success, err = xpcall(function()
     self:compileAndRun(code)
   end, function(e)
@@ -190,25 +212,37 @@ function TLCTest:assertCompileError(code)
 end
 
 function TLCTest:compileAndRunChecked(code)
-  local expectedReturns = { xpcall(
-    function()    return loadstring(code)() end,
-    function(err) return err .. debug.traceback("", 2) end)
+  code = stripString(code)
+
+  local expectedReturns = {
+    xpcall(function()
+      return loadstring(code)()
+    end, function(err)
+      return err .. debug.traceback("", 2)
+    end),
   }
 
-  local actualReturns = { xpcall(
-    function()    return self:compileAndRun(code) end,
-    function(err) return err .. debug.traceback("", 2) end)
+  local actualReturns = {
+    xpcall(function()
+      return self:compileAndRun(code)
+    end, function(err)
+      return err .. debug.traceback("", 2)
+    end),
   }
 
-  local expectedResult, actualResult = table.remove(expectedReturns, 1),
-                                       table.remove(actualReturns, 1)
+  local expectedResult, actualResult =
+    table.remove(expectedReturns, 1), table.remove(actualReturns, 1)
 
   if not expectedResult or not actualResult then
     local errMsg = "Execution success status mismatch: "
     if not expectedResult then
-      errMsg = errMsg .. "Standard Lua failed with: " .. tostring(expectedReturns[1])
+      errMsg = errMsg
+        .. "Standard Lua failed with: "
+        .. tostring(expectedReturns[1])
     else
-      errMsg = errMsg .. "TLC-compiled code failed with: " .. tostring(actualReturns[1])
+      errMsg = errMsg
+        .. "TLC-compiled code failed with: "
+        .. tostring(actualReturns[1])
     end
     error(errMsg, 0)
   end
@@ -252,9 +286,13 @@ local suite = TLCTest.new()
 suite:describe("Lexical Conventions", function()
   suite:describe("Strings", function()
     suite:it("handles various string delimiters", function()
-      suite:compileAndRunChecked([==[
-        return "double" .. 'single' .. [[multi-line]] .. [=[nested]=]
-      ]==])
+      suite:compileAndRunChecked([===[
+        return "double"
+          .. 'single'
+          .. [[multi-line]]
+          .. [=[nested]=]
+          .. [==[deeply nested]==]
+      ]===])
     end)
 
     suite:it("handles empty strings of all kinds", function()
@@ -271,8 +309,11 @@ suite:describe("Lexical Conventions", function()
   end)
 
   suite:describe("Numbers", function()
-    suite:it("handles various integer, hex, and float formats", function()
-      suite:compileAndRunChecked([[return 123 + 0xA2 + 0X1F + 0.5 + 1e2 + 5]])
+    suite:it("handles various number formats", function()
+      suite:compileAndRunChecked([[
+        return 123 + 0xA2 + 0XABCDEF + 0.5 + 1e2 + 5 + .25e+5
+               + 0.2e-1 + .9e3
+      ]])
     end)
 
     suite:it("handles numbers starting with a decimal point", function()
@@ -301,6 +342,15 @@ suite:describe("Lexical Conventions", function()
         --[=[ This is a nested --[[ fake inner ]] multi-line comment ]=]
         return 42
       ]===])
+
+      suite:compileAndRunChecked([===[
+        --[==[ Outer comment start
+            --[=[ Nested comment start
+                --[[ Innermost comment ]]
+            Nested comment end ]=]
+        Outer comment end ]==]
+        return 42
+      ]===])
     end)
 
     suite:it("handles comments at end of file without a newline", function()
@@ -310,10 +360,75 @@ suite:describe("Lexical Conventions", function()
 
   suite:describe("Error Conditions", function()
     suite:it("errors on unterminated strings", function()
-      suite:assertCompileError([[ local a = "hello ]])
+      suite:assertCompileError([[
+        local a = "hello
+      ]])
     end)
+
     suite:it("errors on unterminated long comments", function()
-      suite:assertCompileError([=[ --[[ this is not closed ]=])
+      suite:assertCompileError([=[
+        --[[ this is not closed
+      ]=])
+    end)
+
+    suite:it("errors on an invalid expression", function()
+      suite:assertCompileError([[
+        return 1 + + 2
+      ]])
+    end)
+
+    suite:it("errors on an expression list with a trailing comma", function()
+      suite:assertCompileError([[
+        return 1, 2,
+      ]])
+    end)
+
+    suite:it("errors on a parameter list with a trailing comma", function()
+      suite:assertCompileError([[
+        function f(a, b,) end
+      ]])
+    end)
+
+    suite:it("errors on a named parameter after vararg", function()
+      suite:assertCompileError([[
+        function f(..., a) end
+      ]])
+    end)
+
+    suite:it("errors on an invalid statement", function()
+      suite:assertCompileError([[
+        local = 10
+      ]])
+    end)
+
+    suite:it("errors on an invalid number", function()
+      suite:assertCompileError([[
+        return 0xG1
+      ]])
+    end)
+
+    suite:it("errors on an invalid escape sequence", function()
+      suite:assertCompileError([[
+        return "\z"
+      ]])
+    end)
+
+    suite:it("errors on an out-of-range numeric escape", function()
+      suite:assertCompileError([[
+        return "\256"
+      ]])
+    end)
+
+    suite:it("errors on a break statement outside a loop", function()
+      suite:assertCompileError([[
+        break
+      ]])
+
+      suite:assertCompileError([[
+        do
+          break
+        end
+      ]])
     end)
   end)
 end)
@@ -321,21 +436,24 @@ end)
 suite:describe("Expressions", function()
   suite:describe("Operators", function()
     suite:it("correctly handles arithmetic precedence", function()
-      suite:compileAndRunChecked([[return 2 + 3 * 4 ^ 2 / 2 - 1]])
-    end)
-
-    suite:it("correctly handles mixed relational, logical, and concatenation precedence", function()
       suite:compileAndRunChecked([[
-        return "a" .. "b" == "ab" and not (2 > 3 or 5 < 4)
+        return 2 + 3 * 4 ^ 2 / 2 - 1
       ]])
     end)
 
-    suite:it("handles right-associativity for power operator (^)", function()
-      suite:compileAndRunChecked([[return 2 ^ 3 ^ 2]])
-    end)
+    suite:it(
+      "correctly handles mixed relational, logical, and concatenation precedence",
+      function()
+        suite:compileAndRunChecked([[
+        return "a" .. "b" == "ab" and not (2 > 3 or 5 < 4)
+      ]])
+      end
+    )
 
-    suite:it("handles right-associativity for concatenation (..)", function()
-      suite:compileAndRunChecked([[return "a" .. "b" .. "c"]])
+    suite:it("handles right-associativity for power operator (^)", function()
+      suite:compileAndRunChecked([[
+        return 2 ^ 3 ^ 2
+      ]])
     end)
 
     suite:it("respects parentheses to override precedence", function()
@@ -357,7 +475,9 @@ suite:describe("Expressions", function()
     end)
 
     suite:it("handles equality with nil", function()
-      suite:compileAndRunChecked([[return nil == nil]])
+      suite:compileAndRunChecked([[
+        return nil == nil
+      ]])
     end)
 
     suite:it("handles short-circuiting for 'and'", function()
@@ -369,11 +489,15 @@ suite:describe("Expressions", function()
     end)
 
     suite:it("handles short-circuiting for 'or'", function()
-      suite:compileAndRunChecked([[return 1 or error("fail")]])
+      suite:compileAndRunChecked([[
+        return 1 or error("fail")
+      ]])
     end)
 
     suite:it("'and' returns second operand if first is truthy", function()
-      suite:compileAndRunChecked([[return 1 and 42]])
+      suite:compileAndRunChecked([[
+        return 1 and 42
+      ]])
     end)
   end)
 end)
@@ -398,12 +522,21 @@ suite:describe("Statements", function()
     end)
 
     suite:it("handles mismatched assignment (padding with nil)", function()
-      suite:compileAndRunChecked([[local a, b, c = 1, 2; return a, b, c]])
+      suite:compileAndRunChecked([[
+        local a, b, c = 1, 2;
+        return a, b, c
+      ]])
     end)
 
-    suite:it("handles mismatched assignment (discarding extra values)", function()
-      suite:compileAndRunChecked([[local a = 1, 2, 3; return a]])
-    end)
+    suite:it(
+      "handles mismatched assignment (discarding extra values)",
+      function()
+        suite:compileAndRunChecked([[
+          local a = 1, 2, 3;
+          return a
+        ]])
+      end
+    )
 
     suite:it("handles multi-return function calls in assignments", function()
       suite:compileAndRunChecked([[
@@ -416,12 +549,29 @@ suite:describe("Statements", function()
 
   suite:describe("Control Flow", function()
     suite:it("handles if-else statements", function()
-      suite:compileAndRunChecked([[if true then return 1 else return 1 end]])
-      suite:compileAndRunChecked([[if false then return 1 else return 2 end]])
+      suite:compileAndRunChecked([[
+        if true then
+          return 1
+        else
+          return 2
+        end
+      ]])
+      suite:compileAndRunChecked([[
+        if false then
+          return 1
+        else
+          return 2
+        end
+      ]])
     end)
 
     suite:it("handles if statement with no else part", function()
-      suite:compileAndRunChecked([[if false then return 1 end; return 2]])
+      suite:compileAndRunChecked([[
+        if false then
+          return 1
+        end;
+        return 2
+      ]])
     end)
 
     suite:it("handles if-elseif-else statements", function()
@@ -443,6 +593,7 @@ suite:describe("Statements", function()
         do
           local a = 2
         end;
+
         return a
       ]])
     end)
@@ -453,15 +604,18 @@ suite:describe("Statements", function()
       suite:compileAndRunChecked([[return 1, 2, 3]])
     end)
 
-    suite:it("handles single return from multi-return function wrapped in parens", function()
-      suite:compileAndRunChecked([[
+    suite:it(
+      "handles single return from multi-return function wrapped in parens",
+      function()
+        suite:compileAndRunChecked([[
         local function f()
           return 1, 2, 3
         end;
         local a, b, c = (f());
         return a, b, c
       ]])
-    end)
+      end
+    )
 
     suite:it("handles return from inside a loop", function()
       suite:compileAndRunChecked([[
@@ -476,26 +630,32 @@ suite:describe("Statements", function()
 end)
 
 suite:describe("Loops", function()
-  suite:it("handles while loops", function()
-    suite:compileAndRunChecked([[
-      local i = 5;
-      local sum = 0;
-      while i > 0 do
-        sum = sum + i;
-        i = i - 1
-      end;
-      return sum
-    ]])
+  suite:describe("While Loops", function()
+    suite:it("handles basic while loops", function()
+      suite:compileAndRunChecked([[
+        local i = 1;
+        local sum = 0;
+        while i <= 5 do
+          sum = sum + i;
+          i = i + 1
+        end;
+        return sum
+      ]])
+    end)
   end)
 
-  suite:it("handles repeat-until loops", function()
-    suite:compileAndRunChecked([[
-      local i = 5;
-      repeat
-        i = i - 1
-      until i <= 0;
-      return i
-    ]])
+  suite:describe("Repeat-Until Loops", function()
+    suite:it("handles basic repeat-until loops", function()
+      suite:compileAndRunChecked([[
+        local i = 1;
+        local sum = 0;
+        repeat
+          sum = sum + i;
+          i = i + 1
+        until i > 5;
+        return sum
+      ]])
+    end)
   end)
 
   suite:describe("Numeric For Loops", function()
@@ -509,7 +669,7 @@ suite:describe("Loops", function()
       ]])
     end)
 
-    suite:it("handles numeric for loop with a step value", function()
+    suite:it("handles numeric for loop with a negative step value", function()
       suite:compileAndRunChecked([[
         local sum = 0;
         for i = 10, 1, -2 do
@@ -525,6 +685,19 @@ suite:describe("Loops", function()
         for i = 0.5, 2.5, 0.5 do
           sum = sum + i
         end;
+
+        return sum
+      ]])
+    end)
+
+    suite:it("uses a separate variable for the loop counter", function()
+      suite:compileAndRunChecked([[
+        local sum = 0;
+        for i = 1, 10 do
+          sum = sum + i
+          i = i + 5; -- This shouldn't affect the loop
+        end
+
         return sum
       ]])
     end)
@@ -537,6 +710,7 @@ suite:describe("Loops", function()
         for _, v in ipairs({5, 4, 3}) do
           sum = sum + v
         end;
+
         return sum
       ]])
     end)
@@ -548,22 +722,26 @@ suite:describe("Loops", function()
         for k, v in pairs(t) do
           sum = sum + v
         end;
+
         return sum
       ]])
     end)
 
     suite:it("works with a custom iterator", function()
       suite:compileAndRunChecked([[
-        local sum = 0
-        for v in (function()
+        local sum = 0;
+        local iterator = function()
           local n=0;
           return function()
             n=n+1;
             return n<=3 and n*3 or nil
           end
-        end)() do
+        end
+
+        for v in iterator() do
           sum = sum + v
         end
+
         return sum
       ]])
     end)
@@ -582,6 +760,7 @@ suite:describe("Loops", function()
         return sum
       ]])
     end)
+
     suite:it("breaks out of a generic for loop", function()
       suite:compileAndRunChecked([[
         local sum = 0;
@@ -591,9 +770,11 @@ suite:describe("Loops", function()
             break
           end
         end;
+
         return sum
       ]])
     end)
+
     suite:it("breaks out of a while loop", function()
       suite:compileAndRunChecked([[
         local sum = 0;
@@ -603,9 +784,11 @@ suite:describe("Loops", function()
             break
           end
         end;
+
         return sum
       ]])
     end)
+
     suite:it("breaks out of a repeat loop", function()
       suite:compileAndRunChecked([[
         local sum = 0;
@@ -615,6 +798,7 @@ suite:describe("Loops", function()
             break
           end
         until false;
+
         return sum
       ]])
     end)
@@ -634,7 +818,13 @@ suite:describe("Scoping and Closures", function()
   end)
 
   suite:it("allows repeated local declarations in different scopes", function()
-    suite:compileAndRunChecked([[local x = 1; do local x = 2 end; return x]])
+    suite:compileAndRunChecked([[
+      local x = 1;
+      do
+        local x = 2
+      end;
+      return x
+    ]])
   end)
 
   suite:describe("Upvalues", function()
@@ -694,7 +884,12 @@ suite:describe("Functions", function()
     end)
 
     suite:it("handles named function syntax sugar", function()
-      suite:compileAndRunChecked([[function f() return 1 end; return f()]])
+      suite:compileAndRunChecked([[
+        function f()
+          return 1
+        end;
+        return f()
+      ]])
     end)
 
     suite:it("handles table method definitions", function()
@@ -720,16 +915,19 @@ suite:describe("Functions", function()
       ]])
     end)
 
-    suite:it("handles parenthesis-less calls with a table constructor", function()
-      suite:compileAndRunChecked([[
-        local t;
-        local function f(x)
-          t=x
-        end;
-        f{1,2};
-        return t[2]
-      ]])
-    end)
+    suite:it(
+      "handles parenthesis-less calls with a table constructor",
+      function()
+        suite:compileAndRunChecked([[
+          local t;
+          local function f(x)
+            t=x
+          end;
+          f{1,2};
+          return t[2]
+        ]])
+      end
+    )
 
     suite:it("handles method calls with the colon syntax", function()
       suite:compileAndRunChecked([[
@@ -755,13 +953,13 @@ suite:describe("Functions", function()
 end)
 
 suite:describe("Tables", function()
+  suite:it("handles empty table constructors", function()
+    suite:compileAndRunChecked([[return {}]])
+  end)
+
   suite:it("handles comma and semicolon separators", function()
     suite:compileAndRunChecked([[return {1, 2, 3}]])
     suite:compileAndRunChecked([[return {1; 2; 3}]])
-  end)
-
-  suite:it("handles empty table constructors", function()
-    suite:compileAndRunChecked([[return {}]])
   end)
 
   suite:it("handles trailing separators", function()
@@ -776,7 +974,9 @@ suite:describe("Tables", function()
   end)
 
   suite:it("handles hash-style and mixed constructors", function()
-    suite:compileAndRunChecked([[return ({a = 1, ["b"] = 2, [3] = 3, 4})["b"] ]])
+    suite:compileAndRunChecked([[
+      return ({a = 1, ["b"] = 2, [3] = 3, 4})["b"]
+    ]])
   end)
 
   suite:it("handles multi-return call as the last element", function()
@@ -788,27 +988,7 @@ suite:describe("Tables", function()
   end)
 end)
 
-suite:describe("Error Handling and Syntax", function()
-  suite:it("detects basic syntax errors", function()
-    suite:assertCompileError("return 1 + + 2")
-  end)
-end)
-
 suite:describe("Complex General Tests", function()
-  suite:it("correctly computes factorial", function()
-    suite:compileAndRunChecked([[
-      local function factorial(n)
-        if n == 0 then
-          return 1
-        else
-          return n * factorial(n - 1)
-        end
-      end
-
-      return factorial(10)
-    ]])
-  end)
-
   suite:it("correctly computes fibonacci", function()
     suite:compileAndRunChecked([[
       local function fib(n)
@@ -825,20 +1005,14 @@ suite:describe("Complex General Tests", function()
 
   suite:it("Self-compilation", function()
     -- NOTE: This test might take a while to run.
+
     local testCode = [[
       local tlcSource = io.open("tlc.lua"):read("*a")
 
       local tlc  = suite:compileAndRun(tlcSource)
       local code = "return 2 * 10 + (function() return 2 * 5 end)()"
 
-      local tokens   = tlc.Tokenizer.new(code):tokenize()
-      local ast      = tlc.Parser.new(tokens):parse()
-      local proto    = tlc.CodeGenerator.new(ast):generate()
-      local bytecode = tlc.BytecodeEmitter.new(proto):emit()
-
-      local func = loadstring(bytecode)
-
-      return func()
+      return tlc.run(code)
     ]]
 
     -- Inject the test suite into the global scope for
