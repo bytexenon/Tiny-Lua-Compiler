@@ -82,6 +82,7 @@ local function makeTrie(ops)
       node[char] = node[char] or {}
       node = node[char]
     end
+
     -- Mark this node as a valid ending point for an operator.
     node.value = op
   end
@@ -94,7 +95,7 @@ end
 -- is computationally expensive due to pattern matching overhead.
 --
 -- Since a byte can only have 256 possible values, we can pre-calculate
--- the result of the pattern match for every possible character (1-255).
+-- the result of the pattern match for every possible character (1-255)
 -- This transforms a regex operation into a simple array lookup.
 local function makePatternLookup(pattern)
   local lookup = {}
@@ -159,7 +160,7 @@ end
 -- - Strategic separation of "safe" vs "unsafe" punctuation, to minimize
 --   expensive multi-character operator checks.
 -- - string.find usage for bulk consumption of known patterns (faster than
---   manually scanning character by character).
+--   manually scanning character-by-character in most cases).
 
 --* Tokenizer *--
 
@@ -177,14 +178,14 @@ Tokenizer.CONFIG = {
   -- get more common tokens (like parentheses and commas) out of the way quickly, without
   -- having to check for multi-character operators.
   -- stylua: ignore
-SAFE_  PUNCTUATION = {
+  SAFE_PUNCTUATION = {
     [":"] = "Colon",        [";"] = "Semicolon",
     ["("] = "LeftParen",    [")"] = "RightParen",
     ["{"] = "LeftBrace",    ["}"] = "RightBrace",
     ["]"] = "RightBracket", [","] = "Comma",
 
     -- Excluded:
-    --     ["["] = "LeftBracket" - Can start long strings
+    -- ["["] = "LeftBracket" - Can start long strings
     -- ["."] = "Dot"         - Can start ".." or "..."
     -- ["="] = "Equals"      - Can start "=="
   },
@@ -220,7 +221,7 @@ SAFE_  PUNCTUATION = {
   -- But this becomes messy with many operators:
   --   - '.' could be: '.', '..', or '...' (vararg)
   --   - '=' could be: '=' or '=='
-  --   - '~' could be: '~' (error in Lua) or '~=' (not equal)
+  --   - '~' could be: '~' (error in Lua 5.1) or '~=' (not equal)
   --
   -- You'd need complex nested if-statements for each character.
   --
@@ -232,11 +233,11 @@ SAFE_  PUNCTUATION = {
   -- Visual representation of our operator trie:
   --
   --           [root]
-  --           /  |  \
-  --         <   =   .
-  --        /    |    \
-  --       =    =      .
-  --     (<=) (==)    (..)
+  --          /   |  \
+  --         <    =   .
+  --        /     |    \
+  --       =      =     .
+  --     (<=)    (==)  (..)
   --
   -- Algorithm (Longest Prefix Matching):
   -- 1. Start at the root
@@ -244,21 +245,6 @@ SAFE_  PUNCTUATION = {
   -- 3. If the current node is marked as valid operator, remember it
   -- 4. Keep going as long as edges exist
   -- 5. Return the longest valid operator found
-  --
-  -- Example: Tokenizing "<=>"
-  -- -------------------------
-  -- Position 0: '<' -> Found node, it's valid operator '<', remember it
-  -- Position 1: '=' -> Found node, it's valid operator '<=', remember it
-  -- Position 2: '>' -> No edge exists from current node, STOP
-  -- Result: Consume '<=' (the longest match), leave '>' for next token
-  --
-  -- Why This Works:
-  -- ---------------
-  -- - O(k) time complexity, where k is the length of the operator (typically 1-2)
-  -- - No backtracking needed
-  -- - Automatically prefers longer operators (greedy matching)
-  -- - Easily extensible (just add to the list, trie auto-generated)
-  --
   --
   -- stylua: ignore
   OPERATOR_TRIE = makeTrie({
@@ -399,9 +385,9 @@ end
 -- Checks if the current character and the next character form the
 -- prefix of a hexadecimal number (0x or 0X).
 function Tokenizer:isHexadecimalNumberPrefix()
-if self.curChar == "0" then
-  local nextChar = self:lookAhead(1)
-  return nextChar == "x" or nextChar == "X"
+  if self.curChar == "0" then
+    local nextChar = self:lookAhead(1)
+    return nextChar == "x" or nextChar == "X"
   end
 end
 
@@ -414,7 +400,6 @@ end
 --   [=[   -> depth of 1
 --   [[    -> depth of 0
 function Tokenizer:calculateDelimiterDepth()
-  -- Find how many '=' characters follow the initial '['.
   -- NOTE: In this case, using `string.find` is faster than
   -- manually scanning character by character.
   local startMatchPos, endMatchPos = string.find(self.code, "^=*", self.curCharPos)
@@ -482,12 +467,12 @@ function Tokenizer:consumeNumber()
       error(
         string.format(
           "malformed number near '%s'",
-self.code:sub(startPos, self.curCharPos - 1)
-)
+          self.code:sub(startPos, self.curCharPos - 1)
+        )
       )
-  end
+    end
 
-  -- Update the state.
+    -- Update the state.
     self:setCurrentPosition(endPos + 1)
 
     local numberString = self.code:sub(startPos, self.curCharPos - 1)
@@ -532,15 +517,14 @@ self.code:sub(startPos, self.curCharPos - 1)
 end
 
 -- Consumes a numeric escape sequence (\ddd) from a string literal.
--- Expects the current character to be the first digit after the '\'.
 -- Validates that the number is within the byte range (0-255).
 function Tokenizer:consumeNumericEscapeSequence()
   -- [0-9]{1,3}
-  local pattern = "^[0-9][0-9]?[0-9]?"
+  local pattern = "^[0-9][0-9]?[0-9]?" -- The last two digits are optional.
   local startPos, endPos = string.find(self.code, pattern, self.curCharPos)
   local numberString = self.code:sub(startPos, endPos)
   local number = tonumber(numberString)
-  if not number or number > 255 then
+  if number > 255 then
     error("escape sequence too large near '\\" .. numberString .. "'")
   end
 
@@ -553,15 +537,15 @@ end
 -- Consumes an escape sequence in a string literal (e.g., \n, \t, \123).
 -- Returns the actual character value represented by the escape sequence.
 function Tokenizer:consumeEscapeSequence()
-self:consume(1) -- Consume the "\" character.
-local curChar = self.curChar
+  self:consume(1) -- Consume the "\" character.
+  local curChar = self.curChar
 
--- Is it a standard escape sequence? (e.g. \n, \t, etc.)
+  -- Is it a standard escape sequence? (e.g. \n, \t, etc.)
   local convertedChar = self.CONFIG.ESCAPES[curChar]
   if convertedChar then
-self:consume(1) -- Consume the escape character.
+    self:consume(1) -- Consume the escape character.
     return convertedChar
-  
+
   -- Is it a numeric escape sequence? (e.g. \65, \123, etc.)
   elseif self.PATTERNS.DIGIT[curChar] then
     return self:consumeNumericEscapeSequence()
@@ -577,7 +561,7 @@ function Tokenizer:consumeSimpleString()
   local newString = {}
   self:consume(1) -- Consume the quote.
 
--- Consume until the closing quote is found.
+  -- Consume until the closing quote is found.
   while self.curChar ~= quoteChar do
     -- Is it an escape sequence?
     if self.curChar == "\\" then
@@ -591,9 +575,9 @@ function Tokenizer:consumeSimpleString()
     -- Regular character.
     else
       table.insert(newString, self.curChar)
-self:consume(1) -- Consume the character.
+      self:consume(1) -- Consume the character.
     end
-      end
+  end
   self:consume(1) -- Consume the closing quote.
 
   return table.concat(newString)
@@ -640,7 +624,7 @@ function Tokenizer:consumeLongString()
   if not endPos then
     error("Unclosed long string")
   end
-  
+
   -- Update the state.
   self:setCurrentPosition(endPos + 1)
 
@@ -658,7 +642,7 @@ function Tokenizer:consumeOperator()
   local startPos   = self.curCharPos
   local newCharPos = startPos
   while true do
--- Optimization: Use `sub` instead of `lookAhead` to
+    -- Optimization: Use `sub` instead of `lookAhead` to
     -- avoid extra function call overhead in this tight loop.
     local character = string.sub(self.code, newCharPos, newCharPos)
     node = node[character]
@@ -709,10 +693,10 @@ function Tokenizer:consumeLongComment()
 
   -- Is it not a full delimiter?
   if self.curChar ~= "[" then
--- Treat it as a short comment instead.
+    -- Treat it as a short comment instead.
     return self:consumeShortComment()
   end
-  
+
   self:consume(1) -- Consume the second '['.
 
   -- Consume the closing delimiter using Lua pattern matching.
@@ -774,15 +758,15 @@ function Tokenizer:getNextToken()
     -- Consume the sequence of valid identifier characters.
     local identifier = self:consumeIdentifier()
 
--- Is it a keyword? (E.g., "while", "local", "function", etc.)
+    -- Is it a keyword? (E.g., "while", "local", "function", etc.)
     if self.CONFIG.KEYWORDS[identifier] then
       return "Keyword", identifier
     end
 
     return "Identifier", identifier
-    end
+  end
 
-    -- Processes "safe" punctuation first (single-character tokens that
+  -- Processes "safe" punctuation first (single-character tokens that
   -- cannot be part of multi-character tokens).
   local safeTokenKind = self.CONFIG.SAFE_PUNCTUATION[curChar]
   if safeTokenKind then
@@ -793,16 +777,6 @@ function Tokenizer:getNextToken()
   elseif curChar == '"' or curChar == "'" then
     local stringLiteral = self:consumeSimpleString()
     return "String", stringLiteral
-
-  -- Handle long string literals (with [[...]] or [=[...]=], etc.).
-  elseif curChar == "[" then
-    local nextChar = self:lookAhead(1)
-
-    -- Is it really a long string?
-    if nextChar == "[" or nextChar == "=" then
-      local stringLiteral = self:consumeLongString()
-      return "String", stringLiteral
-  end
 
   -- Handle numeric literals (decimal, hex, scientific, float).
   elseif self.PATTERNS.DIGIT[curChar] then
@@ -816,9 +790,9 @@ function Tokenizer:getNextToken()
       error(
         string.format(
           "malformed number near '%s'",
-numberString
+          numberString
         )
-)
+      )
     end
 
     return "Number", numberValue, numberString
@@ -834,8 +808,8 @@ numberString
 
     -- Is it a number starting with a decimal point? (e.g., .5, .123)
     -- NOTE: We repeat the logic here for performance.
-  if self.PATTERNS.DIGIT[nextChar] then
-    local numberString = self:consumeNumber()
+    if self.PATTERNS.DIGIT[nextChar] then
+      local numberString = self:consumeNumber()
       local numberValue = tonumber(numberString)
 
       -- Validate the number conversion.
@@ -854,9 +828,20 @@ numberString
 
     -- Is it a vararg ("...")?
     elseif nextChar == "." and self:lookAhead(2) == "." then
-    self:consume(3) -- Consume the "...".
-    return "Vararg", nil
+      self:consume(3) -- Consume the "...".
+      return "Vararg", nil
     end
+
+    -- Handle long string literals (with [[...]] or [=[...]=], etc.).
+  elseif curChar == "[" then
+    local nextChar = self:lookAhead(1)
+
+    -- Is it really a long string?
+    if nextChar == "[" or nextChar == "=" then
+      local stringLiteral = self:consumeLongString()
+      return "String", stringLiteral
+    end
+
   end
 
   -- Attempt to consume a symbolic operator using the trie.
@@ -880,11 +865,11 @@ numberString
   -- is not valid in the Lua language syntax.
   error(
     string.format(
-"Unexpected character '%s' at position %d",
+      "Unexpected character '%s' at position %d",
       tostring(curChar),
-self.curCharPos
+      self.curCharPos
     )
-)
+  )
 end
 
 --// Tokenizer Main Method //--
@@ -904,6 +889,7 @@ function Tokenizer:tokenize()
     -- If `getNextToken` returned a valid token (not nil)...
     if tokenKind then
       -- Add the token to our list of results.
+      --
       -- Note: We don't use table.insert here as this is a very performance-critical
       -- section of the code. Using a simple index is faster for sequential inserts.
       tokens[tokenIndex] = {
@@ -921,7 +907,7 @@ end
 
 --[[
     ============================================================================
-                  (ﾉ◕ヮ◕)ﾉ*:･ﾟ THE PARSER!
+                            (ﾉ◕ヮ◕)ﾉ*:･ﾟ THE PARSER!
     ============================================================================
 
     The Second Stage of Compilation: Building the Structure
@@ -980,6 +966,7 @@ Parser.CONFIG = {
 
   -- Precedence for all unary operators (like `-x` or `not x`).
   -- They bind tighter than most binary operators but looser than exponentiation.
+  -- (e.g., `-2^3` parses as `-(2^3)`, not `(-2)^3`).
   UNARY_PRECEDENCE = 8,
 
   -- L-Values (Locator Values).
@@ -1020,6 +1007,7 @@ Parser.CONFIG = {
 }
 
 --// Parser Constructor //--
+
 -- Creates a new Parser instance given a list of tokens from the Tokenizer.
 function Parser.new(tokens)
   --// Type Checking //--
@@ -1029,18 +1017,12 @@ function Parser.new(tokens)
   )
 
   --// Instance Creation //--
-  local self = setmetatable({}, Parser)
-
-  --// Initialization //--
-  self.tokens = tokens
-  self.currentTokenIndex = 1
-  self.currentToken = tokens[1]
-
-  -- Initialize the stack for managing variable scopes.
-  self.scopeStack = {}
-  self.currentScope = nil -- Pointer to the topmost scope on the stack.
-
-  return self
+  return setmetatable({
+    tokens            = tokens,
+    currentTokenIndex = 1,
+    currentToken      = tokens[1],
+    currentScope      = nil
+  }, Parser)
 end
 
 --// Token Navigation //--
@@ -3994,8 +3976,11 @@ function BytecodeEmitter:encodePrototype(proto)
   -- Note: TLC doesn't implement debug info as that would require tracking
   --       line numbers, local variables, and upvalue names, etc. which will
   --       add a lot of unnecessary complexity to the compiler.
+  --
+  -- Optimization: We can build the entire prototype chunk in one go
+  --               using table.concat to minimize string allocations.
   return table.concat({
-    -- Header --
+    -- Prototype Header --
     self:encodeString("@tlc"),             -- Source name.
     self:encodeUint32(0),                  -- Line defined (debug).
     self:encodeUint32(0),                  -- Last line defined (debug).
@@ -4005,14 +3990,9 @@ function BytecodeEmitter:encodePrototype(proto)
     self:encodeUint8(proto.maxStackSize),  -- Max stack size.
 
     -- Sections --
-    self:encodeUint32(#proto.code),        -- Instruction count.
-    self:encodeCodeSection(proto),         -- Code section.
-
-    self:encodeUint32(#proto.constants),   -- Constant count.
-    self:encodeConstantSection(proto),     -- Constant section.
-
-    self:encodeUint32(#proto.protos),      -- Prototype count.
-    self:encodePrototypeSection(proto),    -- Nested prototype section.
+    self:encodeCodeSection(proto),      -- Code section.
+    self:encodeConstantSection(proto),  -- Constant section.
+    self:encodePrototypeSection(proto), -- Nested prototype section.
 
     -- Debug info (not implemented) --
     self:encodeUint32(0), -- Line info (debug).
@@ -4109,10 +4089,10 @@ local function pack(...)
 end
 
 function VirtualMachine:pushClosure(closure)
-self.  closure = {
+  self.closure = {
     proto    = closure.proto,
     upvalues = closure.upvalues or {},
-  env      = closure.env      or _G,
+    env      = closure.env      or _G
   }
 end
 
@@ -4140,8 +4120,8 @@ function VirtualMachine:executeClosure(...)
   -- we negate the index when accessing the constants table.
   local function rk(index)
     if index < 0 then
-return constants[-index]
-end
+      return constants[-index]
+    end
     return stack[index]
   end
 
@@ -4662,28 +4642,20 @@ end
 
 -- Now I'm just exporting everything...
 return {
-  -- ████████╗ ██╗       ██████╗
-  -- ╚══██╔══╝ ██║      ██╔════╝
-  --    ██║    ██║      ██║
-  --    ██║    ██║      ██║
-  --    ██║    ███████╗ ╚██████╗
-  --    ╚═╝    ╚══════╝  ╚═════╝
-  --      Tiny Lua Compiler
-  --         MIT License
+  -- ████████╗  ██╗        ██████╗
+  -- ╚══██╔══╝  ██║       ██╔════╝
+  --    ██║     ██║       ██║
+  --    ██║     ██║       ██║
+  --    ██║     ███████╗  ╚██████╗
+  --    ╚═╝     ╚══════╝   ╚═════╝
+  --       Tiny Lua Compiler
+  --          MIT License
 
   Tokenizer       = Tokenizer,
   Parser          = Parser,
   CodeGenerator   = CodeGenerator,
   BytecodeEmitter = BytecodeEmitter,
   VirtualMachine  = VirtualMachine,
-
-  -- Shortcuts for convenience.
-  -- It is highly recommended to use these shortcut functions for all tasks!
-  -- Why? Because these functions act as a stable, future-proof entry points.
-  -- If the internal compilation steps (tokenizer, parser, codegen, etc.) ever change,
-  -- code that uses these shortcuts will continue to work without modification.
-  -- If you use the classes directly, your code may break with future updates!
-  -- Always use the shortcut functions unless you are hacking on the compiler internals.
 
   -- Legacy API (Deprecated, kept for backward compatibility)
   fullCompile   = compile,
@@ -4700,7 +4672,7 @@ return {
   -- Low-Level API (Step-by-Step)
   -- Takes the previous stage's output as input.
   parseTokens = parseTokens, -- Tokens -> AST
-  generate    = generate,    -- AST -> Proto
-  emit        = emit,        -- Proto -> Bytecode
-  execute     = execute,     -- Proto -> Execution
+  generate    = generate,    -- AST    -> Proto
+  emit        = emit,        -- Proto  -> Bytecode
+  execute     = execute,     -- Proto  -> Execution
 }
