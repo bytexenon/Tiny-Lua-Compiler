@@ -2286,6 +2286,7 @@ CodeGenerator.CONFIG = {
     ["#"]   = "LEN",
     ["not"] = "NOT"
   },
+
   -- stylua: ignore
   ARITHMETIC_OPERATOR_LOOKUP = {
     ["+"] = "ADD", ["-"] = "SUB",
@@ -2300,48 +2301,10 @@ CodeGenerator.CONFIG = {
     ["<"]  = {"LT", 1}, [">"]  = {"LT", 1},
     ["<="] = {"LE", 1}, [">="] = {"LE", 1}
   },
-
-  -- stylua: ignore
-  EXPRESSION_HANDLERS = {
-    -- Literals --
-    ["StringLiteral"]  = "processLiteral",
-    ["NumericLiteral"] = "processLiteral",
-    ["BooleanLiteral"] = "processLiteral",
-    ["NilLiteral"]     = "processLiteral",
-
-    -- Operators --
-    ["BinaryOperator"] = "processBinaryOperator",
-    ["UnaryOperator"]  = "processUnaryOperator",
-
-    -- Other Expressions --
-    ["FunctionCall"]            = "processFunctionCall",
-    ["Variable"]                = "processVariable",
-    ["TableConstructor"]        = "processTableConstructor",
-    ["ParenthesizedExpression"] = "processParenthesizedExpression",
-    ["FunctionExpression"]      = "processFunctionExpression",
-    ["IndexExpression"]         = "processIndexExpression",
-    ["VarargExpression"]        = "processVarargExpression",
-  },
-
-  -- stylua: ignore
-  STATEMENT_HANDLERS = {
-    ["CallStatement"]             = "processCallStatement",
-    ["LocalDeclarationStatement"] = "processLocalDeclarationStatement",
-    ["LocalFunctionDeclaration"]  = "processLocalFunctionDeclaration",
-    ["AssignmentStatement"]       = "processAssignmentStatement",
-    ["WhileStatement"]            = "processWhileStatement",
-    ["RepeatStatement"]           = "processRepeatStatement",
-    ["DoStatement"]               = "processDoStatement",
-    ["ReturnStatement"]           = "processReturnStatement",
-    ["BreakStatement"]            = "processBreakStatement",
-    ["IfStatement"]               = "processIfStatement",
-    ["ForGenericStatement"]       = "processForGenericStatement",
-    ["ForNumericStatement"]       = "processForNumericStatement",
-  },
 }
 
 function CodeGenerator.new(ast)
-  --// Asserting //
+  --// Asserting //--
   assert(
     type(ast) == "table",
     "Expected 'ast' argument to be a table, got: " .. type(ast)
@@ -2351,82 +2314,81 @@ function CodeGenerator.new(ast)
     "Expected 'ast' to be a 'Program' node, got: " .. ast.kind
   )
 
-  --// Initialization //
-  local self = setmetatable({}, CodeGenerator)
-  self.ast   = ast
-  self.proto = nil
+  --// Initialization //--
+  return setmetatable({
+    ast   = ast,
+    proto = nil,
 
-  -- Scope-related fields declaration
-  self.scopes       = {}
-  self.currentScope = nil
-  self.stackSize    = 0
-
-  self.breakJumpPCs = nil
-
-  return self
+    -- Scope-related fields declaration
+    currentScope = nil,
+    breakJumpPCs = nil,
+  }, CodeGenerator)
 end
 
 --// Scope Management //--
+
+-- Used to check for register leaks when leaving a scope.
+function CodeGenerator:checkForRegisterLeaks()
+  local currentScope = self.currentScope
+  if not currentScope then return end
+  if not currentScope.isFunction then return end
+
+  local currentRegisters = currentScope.allocatedRegisters
+  if currentRegisters == 0 then return end
+
+  -- Since all permanent registers are local variables/arguments, we can
+  -- count how many local variables are declared in this scope to determine
+  -- how many registers should be in use at most.
+
+  -- Arguments are treated as local variables.
+  local variableCount = 0
+  for _ in pairs(currentScope.locals) do
+    variableCount = variableCount + 1
+  end
+
+  if currentRegisters > variableCount then
+    error(
+      string.format(
+        "CodeGenerator: Register leak detected when leaving function scope! "
+        .. "Expected at most %d registers in use, but found %d.",
+        variableCount,
+        currentRegisters
+      )
+    )
+  end
+end
+
 function CodeGenerator:enterScope(isFunctionScope)
-  local previousScope = self.currentScope
-  local newScope = {
-    locals      = {},
-    parentScope = previousScope,
-    isFunction  = (isFunctionScope and true) or false,
-    needClose   = false,
+  local parentScope = self.currentScope
+  local allocatedRegisters = 0
+
+  -- Is there a parent scope? If so, inherit its register count,
+  -- unless we're entering a function scope (which starts fresh).
+  if parentScope and not isFunctionScope then
+    allocatedRegisters = parentScope.allocatedRegisters
+  end
+
+  local childScope = {
+    locals             = {},
+    parentScope        = parentScope,
+    isFunction         = (isFunctionScope and true) or false,
+    needClose          = false,
+    allocatedRegisters = allocatedRegisters
   }
-
-  if previousScope then
-    previousScope.stackSize = self.stackSize
-  end
-  table.insert(self.scopes, newScope)
-
-  self.currentScope = newScope
-  if isFunctionScope then
-    -- Function scopes start with an empty stack.
-    self.stackSize = 0
-  end
-
-  return newScope
+  self.currentScope = childScope
+  return childScope
 end
 
 function CodeGenerator:leaveScope()
   local currentScope = self.currentScope
-  local scopes       = self.scopes
   if not currentScope then
     error("CodeGenerator: No scope to leave!")
-
-  -- Check for register leaks when leaving a function scope.
-  elseif currentScope.isFunction and self.stackSize ~= 0 then
-    -- Since all permanent registers are local variables/arguments, we can
-    -- count how many local variables are declared in this scope to determine
-    -- how many registers should be in use at most.
-
-    -- Arguments are treated as local variables.
-    local variableCount = 0
-    for _ in pairs(currentScope.locals) do
-      variableCount = variableCount + 1
-    end
-
-    if self.stackSize > variableCount then
-      error(
-        string.format(
-          "CodeGenerator: Register leak detected when leaving function scope! "
-          .. "Expected at most %d registers in use, but found %d.",
-          variableCount,
-          self.stackSize
-        )
-      )
-    end
   end
 
-  -- Remove the current scope from the stack.
-  table.remove(scopes)
+  self:checkForRegisterLeaks()
 
   local needClose = currentScope.needClose and not currentScope.isFunction
-  currentScope = currentScope.parentScope
-  self.currentScope = currentScope
-  self.stackSize = (currentScope and currentScope.stackSize) or 0
+  self.currentScope = currentScope.parentScope
 
   if needClose then
     if self.breakJumpPCs then
@@ -2434,7 +2396,7 @@ function CodeGenerator:leaveScope()
     end
 
     -- OP_CLOSE [A]    close all variables in the stack up to (>=) R(A)
-    self:emitInstruction("CLOSE", self.stackSize, 0, 0)
+    self:emitInstruction("CLOSE", self.currentScope.allocatedRegisters, 0, 0)
   end
 end
 
@@ -2451,16 +2413,6 @@ function CodeGenerator:declareLocalVariables(varNames)
   end
 end
 
-function CodeGenerator:undeclareVariable(varName)
-  self.currentScope.locals[varName] = nil
-end
-
-function CodeGenerator:undeclareVariables(varNames)
-  for _, varName in ipairs(varNames) do
-    self:undeclareVariable(varName)
-  end
-end
-
 -- Finds the variable register index in current function scope.
 function CodeGenerator:findVariableRegister(varName)
   local scope = self.currentScope
@@ -2474,7 +2426,12 @@ function CodeGenerator:findVariableRegister(varName)
     scope = scope.parentScope
   end
 
-  error("CodeGenerator: Could not find variable '" .. varName .. "' in any scope.")
+  error(
+    string.format(
+      "CodeGenerator: Could not find variable '%s' in any scope.",
+      tostring(varName)
+    )
+  )
 end
 
 -- Determines whether a variable is local, upvalue, or global.
@@ -2495,22 +2452,21 @@ function CodeGenerator:getUpvalueType(variableName)
 end
 
 --// Prototype Management //--
-function CodeGenerator:emitPrototype(properties)
-  local proto = {
+function CodeGenerator:createPrototype(properties)
+  return {
     code         = {},
     constants    = {},
     upvalues     = {},
     protos       = {},
-    numParams    = properties.numParams    or 0,
-    maxStackSize = properties.maxStackSize or self.CONFIG.MIN_STACK_SIZE,
-    isVararg     = properties.isVararg     or false,
+    maxStackSize = self.CONFIG.MIN_STACK_SIZE,
+
+    numParams = properties.numParams or 0,
+    isVararg  = properties.isVararg  or false,
 
     -- Internal lookups for quick access.
     constantLookup = {}, -- format: {[constant] = index in proto.constants}
     upvalueLookup  = {}, -- format: {[varName]  = index in proto.upvalues}
   }
-
-  return proto
 end
 
 --// Register/Constant/Upvalue Management //--
@@ -2519,7 +2475,7 @@ end
 function CodeGenerator:allocateRegisters(count)
   if count <= 0 then return end -- Just ignore non-positive counts.
 
-  local previousStackSize = self.stackSize
+  local previousStackSize = self.currentScope.allocatedRegisters
   local updatedStackSize  = previousStackSize + count
   if updatedStackSize > self.CONFIG.MAX_REGISTERS then
     error(
@@ -2530,7 +2486,7 @@ function CodeGenerator:allocateRegisters(count)
     )
   end
 
-  self.stackSize = updatedStackSize
+  self.currentScope.allocatedRegisters = updatedStackSize
   if updatedStackSize >= self.proto.maxStackSize then
     self.proto.maxStackSize = updatedStackSize
   end
@@ -2538,15 +2494,20 @@ function CodeGenerator:allocateRegisters(count)
   return updatedStackSize - 1
 end
 
+function CodeGenerator:allocateTemporaryRegisters(count)
+  return self:allocateRegisters(count)
+end
+
+-- Frees `count` registers from the top of the stack.
 function CodeGenerator:freeRegisters(count)
   if count <= 0 then return end -- Just ignore non-positive counts.
 
-  local stackSize = self.stackSize - count
+  local stackSize = self.currentScope.allocatedRegisters - count
   if stackSize < 0 then
     error("CodeGenerator: Stack underflow! cannot free below minimum of 0 registers.")
   end
 
-  self.stackSize = stackSize
+  self.currentScope.allocatedRegisters = stackSize
 end
 
 -- A helper function for freeing RK operands.
@@ -2560,16 +2521,17 @@ function CodeGenerator:freeIfRegister(rkOperand)
 end
 
 -- Note:
--- Constant indices are returned as negative numbers (e.g., -1 for the first
--- constant) to distinguish them from register indices, which are non-negative.
--- This mirrors how Lua 5.1's VM encodes RK (Register or Konstant) operands in
--- bytecode: registers use values 0-255, while constants are encoded as 256
--- plus the absolute constant index. By using negative indices internally,
--- TLC simplifies operand handling without losing compatibility.
+--  Constant indices are returned as negative numbers (e.g., -1 for the first
+--  constant) to distinguish them from register indices, which are non-negative.
+--  This mirrors how Lua 5.1's VM encodes RK (Register or Konstant) operands in
+--  bytecode: registers use values 0-255, while constants are encoded as 256
+--  plus the absolute constant index. By using negative indices internally,
+--  TLC simplifies operand handling without losing compatibility.
 function CodeGenerator:findOrCreateConstant(value)
   local constantLookup = self.proto.constantLookup
   local constants      = self.proto.constants
   local constantIndex  = constantLookup[value]
+
   -- Hot path: Constant already exists, return its index.
   if constantIndex then
     return constantIndex
@@ -2586,6 +2548,7 @@ function CodeGenerator:findOrCreateUpvalue(varName)
   local upvalueLookup = self.proto.upvalueLookup
   local upvalues      = self.proto.upvalues
   local upvalueIndex  = upvalueLookup[varName]
+
   -- Hot path: Upvalue already exists, return its index.
   if upvalueIndex then
     return upvalueIndex
@@ -2594,7 +2557,8 @@ function CodeGenerator:findOrCreateUpvalue(varName)
   -- Cold path: New upvalue, add it to the table.
   table.insert(upvalues, varName)
 
-  -- Lua upvalue indices are 0-based, so we subtract 1.
+  -- Lua upvalue indices are 0-based, table indices are 1-based.
+  -- Therefore, we subtract 1 from the length.
   upvalueIndex = #upvalues - 1
   upvalueLookup[varName] = upvalueIndex
   return upvalueIndex
@@ -2625,6 +2589,12 @@ end
 -- TODO: Should we switch to different instruction representations?
 -- E.g. `{opcode = 0, opname = "MOVE", a = 0, b = 1, c = 0}`?
 function CodeGenerator:emitInstruction(opname, a, b, c)
+  if not a then
+    error("CodeGenerator: Missing 'a' operand for instruction " .. opname)
+  elseif not b then
+    error("CodeGenerator: Missing 'b' operand for instruction " .. opname)
+  end
+
   local instruction = { opname, a, b, c or 0 }
   table.insert(self.proto.code, instruction)
 
@@ -2666,19 +2636,10 @@ function CodeGenerator:patchJumpToHere(fromPC)
 end
 
 function CodeGenerator:patchJumpsToHere(jumpPCs)
+  if not jumpPCs then return end
   for _, pc in ipairs(jumpPCs) do
     self:patchJumpToHere(pc)
   end
-end
-
-function CodeGenerator:patchBreakJumpsToHere()
-  if not self.breakJumpPCs then return end
-  self:patchJumpsToHere(self.breakJumpPCs)
-  if #self.breakJumpPCs > 0 and self.breakJumpPCs.needClose then
-    -- OP_CLOSE [A]    close all variables in the stack up to (>=) R(A)
-    self:emitInstruction("CLOSE", self.stackSize, 0, 0)
-  end
-  self.breakJumpPCs = nil
 end
 
 --// Wrappers //--
@@ -2687,7 +2648,13 @@ function CodeGenerator:breakable(callback)
   self.breakJumpPCs = {}
 
   callback()
-  self:patchBreakJumpsToHere()
+
+  -- Patch all breaks to here.
+  self:patchJumpsToHere(self.breakJumpPCs)
+  if #self.breakJumpPCs > 0 and self.breakJumpPCs.needClose then
+    -- OP_CLOSE [A]    close all variables in the stack up to (>=) R(A)
+    self:emitInstruction("CLOSE", self.currentScope.allocatedRegisters, 0, 0)
+  end
 
   self.breakJumpPCs = previousBreakJumpPCs
 end
@@ -2715,7 +2682,7 @@ function CodeGenerator:isSingleFunctionCall(expressions)
   return expression.kind == "FunctionCall"
 end
 
--- Splits table's elements into implicit and explicit ones.
+-- Splits table's elements into implicit and explicit key elements.
 function CodeGenerator:splitTableElements(elements)
   local implicitElems = {}
   local explicitElems = {}
@@ -2756,6 +2723,7 @@ function CodeGenerator:assignValuesToRegisters(nodes, index, copyFromRegister)
       -- OP_SETGLOBAL [A, Bx]    Gbl[Kst(Bx)] := R(A)
       self:emitInstruction("SETGLOBAL", copyFromRegister, constantIndex)
     end
+
     return
   elseif nodeKind == "IndexExpression" then
     local baseNode  = node.base
@@ -2807,9 +2775,11 @@ function CodeGenerator:processTablePage(
   for i = startIndex, endIndex do
     local isLastInBatch = (i == endIndex)
     -- Only the absolute last element gets -1 (multiret), others get 1.
-    local returnCount = (isLastInBatch and isMultiret and -1)
+    local returnCount  = (isLastInBatch and isMultiret and -1) or 1
+    local elemValue    = implicitElems[i].value
+    local elemRegister = self:allocateRegisters(1)
 
-    self:processExpressionNode(implicitElems[i].value, nil, returnCount)
+    self:processExpressionNode(elemValue, elemRegister, returnCount)
   end
 
   -- B = 0 means "take all values from stack top" (used for multiret).
@@ -2822,38 +2792,44 @@ function CodeGenerator:processTablePage(
 end
 
 --// Expression Handlers //--
-
--- Generic processor for both string and numeric literals.
-function CodeGenerator:processLiteral(node, register)
-  local nodeKind = node.kind
-  if nodeKind == "NilLiteral" then
-
-    -- OP_LOADNIL [A, B]    R(A) := ... := R(B) := nil
-    self:emitInstruction("LOADNIL", register, register, 0)
-  elseif nodeKind == "BooleanLiteral" then
-    local value = (node.value and 1) or 0
-
-    -- OP_LOADBOOL [A, B, C]    R(A) := (Bool)B; if (C) pc++
-    self:emitInstruction("LOADBOOL", register, value, 0)
-  elseif nodeKind == "NumericLiteral" or nodeKind == "StringLiteral" then
-    local value         = node.value
-    local constantIndex = self:findOrCreateConstant(value)
-
-    -- OP_LOADK [A, Bx]    R(A) = Kst(Bx)
-    self:emitInstruction("LOADK", register, constantIndex, 0)
-  else
-    error("CodeGenerator: Unsupported literal type: " .. tostring(nodeKind))
-  end
-
+function CodeGenerator:NilLiteral(_, register)
+  -- OP_LOADNIL [A, B]    R(A) := ... := R(B) := nil
+  self:emitInstruction("LOADNIL", register, register, 0)
   return register
 end
 
-function CodeGenerator:processParenthesizedExpression(node, register)
+function CodeGenerator:BooleanLiteral(node, register)
+  local value = (node.value and 1) or 0
+
+  -- OP_LOADBOOL [A, B, C]    R(A) := (Bool)B; if (C) pc++
+  self:emitInstruction("LOADBOOL", register, value, 0)
+  return register
+end
+
+function CodeGenerator:NumericLiteral(node, register)
+  local value         = node.value
+  local constantIndex = self:findOrCreateConstant(value)
+
+  -- OP_LOADK [A, Bx]    R(A) = Kst(Bx)
+  self:emitInstruction("LOADK", register, constantIndex, 0)
+  return register
+end
+
+function CodeGenerator:StringLiteral(node, register)
+  local value         = node.value
+  local constantIndex = self:findOrCreateConstant(value)
+
+  -- OP_LOADK [A, Bx]    R(A) = Kst(Bx)
+  self:emitInstruction("LOADK", register, constantIndex, 0)
+  return register
+end
+
+function CodeGenerator:ParenthesizedExpression(node, register)
   local expression = node.expression
   return self:processExpressionNode(expression, register)
 end
 
-function CodeGenerator:processBinaryOperator(node, register)
+function CodeGenerator:BinaryOperator(node, register)
   local operator = node.operator
   local left     = node.left
   local right    = node.right
@@ -2938,7 +2914,7 @@ function CodeGenerator:processBinaryOperator(node, register)
   error("CodeGenerator: Unsupported binary operator: " .. operator)
 end
 
-function CodeGenerator:processUnaryOperator(node, register)
+function CodeGenerator:UnaryOperator(node, register)
   local operator = node.operator
   local operand  = node.operand
   local opname   = self.CONFIG.UNARY_OPERATOR_LOOKUP[operator]
@@ -2952,7 +2928,7 @@ function CodeGenerator:processUnaryOperator(node, register)
   return register
 end
 
-function CodeGenerator:processTableConstructor(node, register)
+function CodeGenerator:TableConstructor(node, register)
   local elements    = node.elements
   local lastElement = node.elements[#node.elements]
   local isLastElementImplicit = lastElement and lastElement.isImplicitKey
@@ -2961,11 +2937,11 @@ function CodeGenerator:processTableConstructor(node, register)
   -- TODO: We're doing wrong calculation, fix it later.
   -- https://www.lua.org/source/5.1/lparser.c.html#constructor
   -- https://www.lua.org/source/5.1/lobject.c.html#luaO_int2fb
-  local sizeB = math.min(#implicitElems, 100)
-  local sizeC = math.min(#explicitElems, 100)
+  local implicitElemSize = math.min(#implicitElems, 100)
+  local explicitElemSize = math.min(#explicitElems, 100)
 
   -- OP_NEWTABLE [A, B, C]    R(A) := {} (size = B,C)
-  self:emitInstruction("NEWTABLE", register, sizeB, sizeC)
+  self:emitInstruction("NEWTABLE", register, implicitElemSize, explicitElemSize)
 
   for _, elem in ipairs(explicitElems) do
     local keyRegister   = self:processExpressionNode(elem.key)
@@ -3000,7 +2976,7 @@ function CodeGenerator:processTableConstructor(node, register)
   return register
 end
 
-function CodeGenerator:processVariable(node, register)
+function CodeGenerator:Variable(node, register)
   local varName = node.name
   local varType = node.variableType -- "Local" / "Upvalue" / "Global"
 
@@ -3027,7 +3003,7 @@ function CodeGenerator:processVariable(node, register)
   return register
 end
 
-function CodeGenerator:processFunctionCall(node, register, resultRegisters)
+function CodeGenerator:FunctionCall(node, register, resultRegisters)
   local callee       = node.callee
   local arguments    = node.arguments
   local isMethodCall = node.isMethodCall
@@ -3059,29 +3035,32 @@ function CodeGenerator:processFunctionCall(node, register, resultRegisters)
     argumentRegisterCount = argumentRegisterCount + 1
     if not isArgsMultiRet then
       -- Check if it's not multiret, as multiret already includes all args.
-      -- Increasing it by one would turn multiret (-1 + 1 = 0) into a fixed count (0 + 1 = 1)
-      -- which will make it capture only one argument instead of all of them.
+      -- Increasing it by one again in `argumentCount` would turn multiret into a
+      -- fixed count (0 + 1 = 1), which will make it capture zero args instead of all.
       numArgs = numArgs + 1
     end
   end
 
+  -- Convert `numArgs` from our representation (where -1 = MULTIRET, >= 0 = fixed count)
+  -- into Lua's CALL instruction representation (where 0 = MULTIRET, >= 1 = fixed count).
+  local argumentCount    = numArgs + 1
   local returnValueCount = (resultRegisters and resultRegisters + 1) or 2
   local resultCount      = (register + returnValueCount) - 2
 
   -- OP_CALL [A, B, C]    R(A), ... ,R(A+C-2) := R(A)(R(A+1), ... ,R(A+B-1))
-  self:emitInstruction("CALL", register, numArgs + 1, returnValueCount)
+  self:emitInstruction("CALL", register, argumentCount, returnValueCount)
   self:freeRegisters(argumentRegisterCount)
   self:allocateRegisters(returnValueCount - 2) -- One register is already in 'register'
 
   return register, resultCount
 end
 
-function CodeGenerator:processFunctionExpression(node, register)
+function CodeGenerator:FunctionExpression(node, register)
   self:processFunction(node, register)
   return register
 end
 
-function CodeGenerator:processIndexExpression(node, register)
+function CodeGenerator:IndexExpression(node, register)
   local baseNode  = node.base
   local indexNode = node.index
 
@@ -3095,7 +3074,7 @@ function CodeGenerator:processIndexExpression(node, register)
   return baseRegister
 end
 
-function CodeGenerator:processVarargExpression(_, register, resultRegisters)
+function CodeGenerator:VarargExpression(_, register, resultRegisters)
   local varargCount = (resultRegisters or 1) + 1
 
   -- OP_VARARG [A, B]    R(A), R(A+1), ..., R(A+B-1) = vararg
@@ -3105,18 +3084,18 @@ function CodeGenerator:processVarargExpression(_, register, resultRegisters)
 end
 
 --// Statement Handlers //--
-function CodeGenerator:processCallStatement(node)
-  self:processFunctionCall(node.expression, self:allocateRegisters(1), 0)
+function CodeGenerator:CallStatement(node)
+  self:FunctionCall(node.expression, self:allocateRegisters(1), 0)
   -- We shouldn't have allocated registers from statements.
   -- (Unless it's a statement that declares local variables.)
   self:freeRegisters(1)
 end
 
-function CodeGenerator:processDoStatement(node)
+function CodeGenerator:DoStatement(node)
   self:processBlockNode(node.body)
 end
 
-function CodeGenerator:processBreakStatement(_)
+function CodeGenerator:BreakStatement(_)
   if not self.breakJumpPCs then
     error("CodeGenerator: no loop to break")
   end
@@ -3124,11 +3103,11 @@ function CodeGenerator:processBreakStatement(_)
   table.insert(self.breakJumpPCs, self:emitJump())
 end
 
-function CodeGenerator:processLocalDeclarationStatement(node)
+function CodeGenerator:LocalDeclarationStatement(node)
   local variables    = node.variables
   local initializers = node.initializers
 
-  local variableBaseRegister = self.stackSize - 1
+  local variableBaseRegister = self.currentScope.allocatedRegisters - 1
   self:processExpressionList(initializers, #variables)
 
   for index, variableName in ipairs(variables) do
@@ -3137,7 +3116,7 @@ function CodeGenerator:processLocalDeclarationStatement(node)
   end
 end
 
-function CodeGenerator:processLocalFunctionDeclaration(node)
+function CodeGenerator:LocalFunctionDeclaration(node)
   local functionName = node.name
   local body         = node.body
 
@@ -3145,19 +3124,18 @@ function CodeGenerator:processLocalFunctionDeclaration(node)
   self:processFunction(body, variableRegister)
 end
 
-function CodeGenerator:processAssignmentStatement(node)
+function CodeGenerator:AssignmentStatement(node)
   local lvalues     = node.lvalues
   local expressions = node.expressions
 
-  local variableBaseRegister = self.stackSize
+  local variableBaseRegister = self.currentScope.allocatedRegisters
   local lvalueRegisterCount  = self:processExpressionList(expressions, #lvalues)
 
   self:assignValuesToRegisters(lvalues, 1, variableBaseRegister)
-
   self:freeRegisters(lvalueRegisterCount)
 end
 
-function CodeGenerator:processIfStatement(node)
+function CodeGenerator:IfStatement(node)
   local clauses    = node.clauses
   local elseClause = node.elseClause
 
@@ -3204,13 +3182,13 @@ function CodeGenerator:processIfStatement(node)
   self:patchJumpsToHere(jumpToEndPCs)
 end
 
-function CodeGenerator:processForGenericStatement(node)
+function CodeGenerator:ForGenericStatement(node)
   local iterators   = node.iterators
   local expressions = node.expressions
   local body        = node.body
 
   self:enterScope()
-  local baseRegister = self.stackSize
+  local baseRegister = self.currentScope.allocatedRegisters
   self:processExpressionList(expressions, 3)
   self:declareLocalVariables(iterators)
 
@@ -3231,11 +3209,7 @@ function CodeGenerator:processForGenericStatement(node)
   self:leaveScope()
 end
 
--- R(A) - internal loop variable (control variable)
--- R(A+1) - limit
--- R(A+2) - step
--- R(A+3) - user loop variable (copied from R(A) every iteration)
-function CodeGenerator:processForNumericStatement(node)
+function CodeGenerator:ForNumericStatement(node)
   local varName   = node.variable
   local startExpr = node.start
   local limitExpr = node.limit
@@ -3243,9 +3217,10 @@ function CodeGenerator:processForNumericStatement(node)
   local body      = node.body
 
   self:enterScope()
-  local startRegister = self:processExpressionNode(startExpr)
-  self:processExpressionNode(limitExpr)
-  local stepRegister = self:allocateRegisters(1)
+  local controlRegister = self:processExpressionNode(startExpr)
+  ---@diagnostic disable-next-line: unused-local
+  local limitRegister = self:processExpressionNode(limitExpr)
+  local stepRegister  = self:allocateRegisters(1)
 
   -- Is there a step expression?
   if stepExpr then
@@ -3257,15 +3232,21 @@ function CodeGenerator:processForNumericStatement(node)
   end
 
   -- OP_FORPREP [A, sBx]    R(A)-=R(A+2) pc+=sBx
--- Prepare the internal loop variable by subtracting the step from the start.
-  local forPrepInstruction = self:emitInstruction("FORPREP", startRegister, 0)
+  -- Prepare the internal loop variable by subtracting the step from the start.
+  local forPrepInstruction = self:emitInstruction("FORPREP", controlRegister, 0)
   local loopStartPC = #self.proto.code
 
   -- Declare the loop variable in R(A + 3), not R(A).
-  -- We must use the copied "for" variable value instead of
-  -- the actual one, this is because Lua 5.1 numeric for variables
-  -- are read-only.
-  self:declareLocalVariable(varName)
+  -- We must use the copied "for" variable value instead of the actual one,
+  -- this is because Lua 5.1 semantics state that the loop variable is constant
+  -- within the loop body. If the user modifies it, the loop should not be affected.
+  --
+  -- Current register layout:
+  --   R(A)   - internal loop variable (control variable)
+  --   R(A+1) - limit
+  --   R(A+2) - step
+  --   R(A+3) - user loop variable "varName" (copied from R(A) every iteration)
+  self:declareLocalVariable(varName, self:allocateRegisters(1))
   self:breakable(function()
     self:processBlockNode(body)
 
@@ -3274,17 +3255,17 @@ function CodeGenerator:processForNumericStatement(node)
 
     -- OP_FORLOOP [A, sBx]   R(A)+=R(A+2)
     --                       if R(A) <?= R(A+1) then { pc+=sBx R(A+3)=R(A) }
---                       (<?= is < or > depending on step sign)
+    --                       (<?= is < or > depending on step sign)
     --
     -- Increment the internal loop variable R(A) by the step R(A+2), then jump
     -- back to the start of the loop if the limit R(A+1) has not been reached,
     -- copying the new value into the user loop variable R(A+3).
-    self:emitInstruction("FORLOOP", startRegister, loopStartPC - loopEndPC - 1)
+    self:emitInstruction("FORLOOP", controlRegister, loopStartPC - loopEndPC - 1)
   end)
   self:leaveScope()
 end
 
-function CodeGenerator:processWhileStatement(node)
+function CodeGenerator:WhileStatement(node)
   local condition = node.condition
   local body      = node.body
 
@@ -3303,7 +3284,7 @@ function CodeGenerator:processWhileStatement(node)
   self:patchJumpToHere(endJumpPC)
 end
 
-function CodeGenerator:processRepeatStatement(node)
+function CodeGenerator:RepeatStatement(node)
   local body        = node.body
   local condition   = node.condition
   local loopStartPC = #self.proto.code
@@ -3315,8 +3296,11 @@ function CodeGenerator:processRepeatStatement(node)
     local conditionRegister = self:processExpressionNode(condition)
 
     if self.currentScope.needClose then
+      local parentScope = self.currentScope.parentScope
+      local allocatedRegisters = parentScope.allocatedRegisters
+
       -- OP_CLOSE [A]    close all variables in the stack up to (>=) R(A)
-      self:emitInstruction("CLOSE", self.currentScope.parentScope.stackSize, 0, 0)
+      self:emitInstruction("CLOSE", allocatedRegisters, 0, 0)
       self.currentScope.needClose = false
     end
 
@@ -3328,9 +3312,9 @@ function CodeGenerator:processRepeatStatement(node)
   self:leaveScope()
 end
 
-function CodeGenerator:processReturnStatement(node)
+function CodeGenerator:ReturnStatement(node)
   local expressions      = node.expressions
-  local resultRegister   = self.stackSize
+  local resultRegister   = self.currentScope.allocatedRegisters
   local lastExpression   = expressions[#expressions]
   local isSingleFuncCall = self:isSingleFunctionCall(expressions)
   local numResults, exprRegisterCount
@@ -3339,19 +3323,19 @@ function CodeGenerator:processReturnStatement(node)
   -- If it's a single function call, we can optimize it to a TAILCALL.
   -- Tail calls are more efficient as they reuse the current function's stack frame.
   if isSingleFuncCall then
-    self:processFunctionCall(
+    self:FunctionCall(
       lastExpression,
-      self:allocateRegisters(1), -- This register must get manually free'd later.
+      self:allocateRegisters(1), -- This register will be manually freed later.
       -1
     )
 
-    local callInstruction = self.proto.code[#self.proto.code]
-    if not callInstruction or callInstruction[1] ~= "CALL" then
+    local lastInstruction = self.proto.code[#self.proto.code]
+    if not lastInstruction or lastInstruction[1] ~= "CALL" then
       error("CodeGenerator: Expected CALL instruction for tail call optimization.")
     end
 
     -- OP_TAILCALL [A, B, C]    return R(A)(R(A+1), ... ,R(A+B-1))
-    callInstruction[1] = "TAILCALL" -- Change CALL to TAILCALL
+    lastInstruction[1] = "TAILCALL" -- Change CALL to TAILCALL
     numResults         = -1         -- -1 = MULTIRET (all results)
 
     self:freeRegisters(1) -- Free the temp register used for the call.
@@ -3368,15 +3352,13 @@ end
 
 -- Process an expression AST node and return the register(s) holding its value.
 -- If 'register' is nil a new register is allocated. 'resultRegisters' requests
--- multiple results (used for calls/vararg). Dispatches to the handler named
--- in CONFIG.EXPRESSION_HANDLERS for the node.kind.
+-- multiple results (used for calls/vararg).
 function CodeGenerator:processExpressionNode(node, register, resultRegisters)
   if not node then error("Node not found.") end
   register = register or self:allocateRegisters(1)
 
   local nodeKind = node.kind
-  local handler  = self.CONFIG.EXPRESSION_HANDLERS[nodeKind]
-  local func     = self[handler]
+  local func     = self[nodeKind]
   if not func then
     error("CodeGenerator: Expression node kind not supported: " .. nodeKind)
   end
@@ -3384,14 +3366,12 @@ function CodeGenerator:processExpressionNode(node, register, resultRegisters)
   return func(self, node, register, resultRegisters)
 end
 
--- Process a statement AST node. Dispatches to the handler named
--- in CONFIG.STATEMENT_HANDLERS for the node.kind.
+-- Process a statement AST node.
 function CodeGenerator:processStatementNode(node)
   if not node then error("Node not found.") end
 
   local nodeKind = node.kind
-  local handler  = self.CONFIG.STATEMENT_HANDLERS[nodeKind]
-  local func     = self[handler]
+  local func     = self[nodeKind]
   if not func then
     error("CodeGenerator: Statement node kind not supported: " .. nodeKind)
   end
@@ -3428,12 +3408,12 @@ function CodeGenerator:processExpressionList(expressionList, expectedRegisters)
     -- Calculate how many registers are remaining to be filled.
     -- If `expectedRegisters` is nil, we pass -1 to capture all results.
     local remaining = (expectedRegisters and (expectedRegisters - fixedCount)) or -1
-    self:processExpressionNode(lastExpression, nil, remaining)
+    self:processExpressionNode(lastExpression, self:allocateRegisters(1), remaining)
 
   -- Padding: If we have fewer expressions than expected, fill the rest with nils.
   elseif expectedRegisters and expectedRegisters > count then
     local needed   = expectedRegisters - count
-    local startReg = self.stackSize
+    local startReg = self.currentScope.allocatedRegisters
     local endReg   = self:allocateRegisters(needed)
 
     -- OP_LOADNIL [A, B]    R(A) := ... := R(B) := nil
@@ -3456,27 +3436,6 @@ function CodeGenerator:processBlockNode(blockNode)
   self:enterScope()
   self:processStatementList(blockNode.statements)
   self:leaveScope()
-end
-
-function CodeGenerator:processFunctionBody(node)
-  local previousBreakJumpPCs = self.breakJumpPCs
-  self.breakJumpPCs = nil
-  self:enterScope(true)
-  for _, paramName in ipairs(node.parameters) do
-    self:declareLocalVariable(paramName)
-  end
-
-  if node.isVararg then
-    -- Declare implicit "arg" variable to hold vararg values.
-    self:declareLocalVariable("arg")
-  end
-
-  self:processStatementList(node.body.statements)
-  -- Generate default return statement.
-  -- OP_RETURN [A, B]    return R(A), ... ,R(A+B-2)
-  self:emitInstruction("RETURN", 0, 1, 0)
-  self:leaveScope()
-  self.breakJumpPCs = previousBreakJumpPCs
 end
 
 -- Adds `proto` prototype to the `self.proto.protos` list and generates
@@ -3510,13 +3469,37 @@ function CodeGenerator:generateClosure(proto, closureRegister)
   end
 end
 
+-- Processes the body of a function AST node, handling parameter declarations,
+-- varargs, and generating the function's statements.
+function CodeGenerator:processFunctionBody(node)
+  local previousBreakJumpPCs = self.breakJumpPCs
+  self.breakJumpPCs = nil
+  self:enterScope(true) -- Enter function scope.
+  for _, paramName in ipairs(node.parameters) do
+    self:declareLocalVariable(paramName)
+  end
+
+  if node.isVararg then
+    -- Declare implicit "arg" variable to hold vararg values.
+    self:declareLocalVariable("arg")
+  end
+
+  self:processStatementList(node.body.statements)
+
+  -- Generate default return statement.
+  -- OP_RETURN [A, B]    return R(A), ... ,R(A+B-2)
+  self:emitInstruction("RETURN", 0, 1, 0)
+  self:leaveScope()
+  self.breakJumpPCs = previousBreakJumpPCs
+end
+
 -- Processes a function AST node into a function prototype (proto), creating a child
 -- prototype for the function's body and handling upvalue capture. If
 -- closureRegister is provided, emits a CLOSURE instruction to create the
 -- closure in that register. Returns the compiled child prototype.
 function CodeGenerator:processFunction(functionNode, closureRegister)
   local parentProto = self.proto
-  local childProto  = self:emitPrototype({
+  local childProto  = self:createPrototype({
     isVararg  = functionNode.isVararg,
     numParams = #functionNode.parameters,
   })
