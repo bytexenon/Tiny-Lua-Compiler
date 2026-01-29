@@ -1035,44 +1035,25 @@ end
 
 --// Token Navigation //--
 
--- Looks ahead by 'n' tokens in the token stream without advancing
--- the current position. Useful for peeking to decide which grammar rule
--- to apply (e.g., looking for '=' after an identifier to know if it's an assignment).
--- Returns the token at the looked-ahead index, or nil if trying to look past the end.
-function Parser:lookAhead(n)
-  local targetTokenIndex = self.currentTokenIndex + n
-  return self.tokens[targetTokenIndex]
+-- Looks ahead to the next token without consuming it.
+--
+-- NOTE: This function is used only in one place in the parser (`:consumeTable`),
+-- as it is the only situation where we need to peek more than one token ahead.
+function Parser:lookAhead()
+  return self.tokens[self.currentTokenIndex + 1]
 end
 
-
 -- Consumes (advances past) 'n' tokens in the token stream.
--- This is how the parser moves forward after successfully parsing a part of the code.
--- Updates `currentTokenIndex` and `currentToken`.
--- Returns the new current token after consumption.
--- Assumes n is a positive integer.
 function Parser:consume(n)
-    -- Simple safety check: if we're trying to reach past the end of the stream,
-    -- we should throw an error. This prevents infinite loops in the parser.
-  if not self.currentToken and self.currentTokenIndex ~= 1 then
-    error(
-      "Internal Parser Error: Attempted to consume past end of stream. "
-      .. "Infinite loop detected?"
-    )
-  end
-
-  -- Advance the token index
   local newTokenIndex = self.currentTokenIndex + n
   local newToken      = self.tokens[newTokenIndex]
   self.currentTokenIndex = newTokenIndex
   self.currentToken      = newToken
-
-  return newToken
 end
 
 -- Helper to get a human-readable description of a token for error messages.
 -- Returns a string describing the token kind and value (if any).
 function Parser:getTokenDescription(token)
-  if not token then return "<end of file>" end
   if not token.value then return tostring(token.kind) end
   return string.format("%s [%s]", tostring(token.kind), tostring(token.value))
 end
@@ -1091,15 +1072,13 @@ function Parser:error(message)
   )
 end
 
--- Consumes the current token, but only if its kind AND value match the expectation.
--- Used for consuming specific keywords or characters (like `end`, `(`, `=`).
--- Throws a detailed error with token location if the expectation is not met.
--- This is a strong check for expected syntax elements.
+-- Consumes the current token if it matches the expected `tokenKind` and `tokenValue`.
+-- If it doesn't match, throws a syntax error.
 function Parser:consumeToken(tokenKind, tokenValue)
   local token = self.currentToken
 
   -- Check if the current token exists and matches the expected kind and value.
-  if token and token.kind == tokenKind and token.value == tokenValue then
+  if token.kind == tokenKind and token.value == tokenValue then
     -- Match! Consume this token and exit the function.
     self:consume(1)
     return
@@ -1120,42 +1099,34 @@ end
 -- These functions manage the parser's understanding of variable scopes
 -- (blocks, functions) as it traverses the AST structure implicitly during parsing.
 
--- Enters a new scope by pushing a new scope object onto the scope stack.
--- This new scope becomes the `currentScope`.
+-- Creates a new scope objects and links it to the current scope.
 -- `isFunctionScope` is a crucial flag: only function scopes create a boundary
 -- that causes variables from enclosing scopes to become 'upvalues' if accessed.
-function Parser:enterScope(isFunctionScope)
+-- `isLoopScope` is used to validate `break` statement correctness.
+function Parser:enterScope(isFunctionScope, isLoopScope)
   local newScope = {
-    localVariables = {}, -- Used to track local variables declared in this scope.
-    isFunctionScope = isFunctionScope or false, -- Is this a function's scope?
+    localVariables  = {},
+    isFunctionScope = isFunctionScope or false,
+    isLoopScope     = isLoopScope or false,
+    parentScope     = self.currentScope
   }
-  table.insert(self.scopeStack, newScope) -- Push the new scope onto the stack.
-  self.currentScope = newScope -- The new scope is now the active one.
+  self.currentScope = newScope
   return newScope
 end
 
--- Exits the current scope by popping it from the scope stack.
--- The previous scope on the stack (if any) becomes the `currentScope`.
--- Called when leaving a block, loop body, or function definition.
+-- Exits the current scope, returning to the parent scope.
+-- Should be called when leaving a block or function.
 function Parser:exitScope()
-  table.remove(self.scopeStack)
-
-  -- The new `currentScope` is the one now at the top
-  -- of the stack (or nil if stack is empty).
-  self.currentScope = self.scopeStack[#self.scopeStack]
+  self.currentScope = self.currentScope.parentScope
 end
 
 --// In-Scope Variable Management //--
 -- These functions help track local variable declarations within the current scope.
 
--- Records that a local variable with `variable` name has been declared
--- in the `currentScope`. Used when parsing `local variable` or function parameters.
 function Parser:declareLocalVariable(variable)
-  -- Mark the variable name as existing in the current scope's local list.
   self.currentScope.localVariables[variable] = true
 end
 
--- Declares a list of local variables.
 function Parser:declareLocalVariables(variables)
   local currentLocalVariables = self.currentScope.localVariables
   for _, variable in ipairs(variables) do
@@ -1170,24 +1141,23 @@ end
 -- Upvalue: Found in an enclosing function's scope (closure capture).
 -- Global: Not found in any open scope, assumed to be in _G.
 function Parser:getVariableType(variableName)
-  local scopeStack = self.scopeStack
-  local isUpvalue  = false
+  local currentScope = self.currentScope
+  local isUpvalue    = false
 
-  -- Walk up the scope stack from innermost to outermost.
-  for scopeIndex = #scopeStack, 1, -1 do
-    local scope = scopeStack[scopeIndex]
-
+  while currentScope do
     -- If found, determine if it's a local or an upvalue based on whether
     -- we have crossed a function boundary during the search.
-    if scope.localVariables[variableName] then
+    if currentScope.localVariables[variableName] then
       local variableType = (isUpvalue and "Upvalue") or "Local"
-      return variableType, scopeIndex
+      return variableType
 
     -- A function scope acts as a closure boundary. Any variable found
     -- in a scope above this one must be captured as an upvalue.
-    elseif scope.isFunctionScope then
+    elseif currentScope.isFunctionScope then
       isUpvalue = true
     end
+
+    currentScope = currentScope.parentScope
   end
 
   -- If the variable isn't declare in any enclosing scope,
@@ -1195,48 +1165,48 @@ function Parser:getVariableType(variableName)
   return "Global"
 end
 
+-- Used to determine if a `break` statement is valid in the current context.
+function Parser:canBreak()
+  local currentScope = self.currentScope
+  while currentScope do
+    if currentScope.isLoopScope then
+      return true
+    elseif currentScope.isFunctionScope then
+      -- Can't break out of a function.
+      break
+    end
+    currentScope = currentScope.parentScope
+  end
+
+  return false
+end
+
 --// Token Checkers //--
 -- Lightweight checks to see if a token matches a specific kind and/or value
 -- without throwing an error if it doesn't match.
 
--- Checks if the given `token` (or `self.currentToken`) is of the specified `kind`.
--- This is a generic check for any token kind (e.g., "Identifier", "Number", etc.).
-function Parser:checkTokenKind(kind, token)
-  token = token or self.currentToken
-  return token and token.kind == kind
+function Parser:checkCurTokenKind(kind)
+  return self.currentToken.kind == kind
 end
 
--- Checks if the current token is a 'Keyword'
--- token with the specified `keyword` value.
+function Parser:isComma()
+  return self.currentToken.kind == "Comma"
+end
+
 function Parser:checkKeyword(keyword)
   local token = self.currentToken
-  return token
-        and token.kind  == "Keyword"
-        and token.value == keyword
+  return token.kind == "Keyword" and token.value == keyword
 end
 
--- Checks if the current token is the comma character ','.
--- Used frequently in parsing lists (argument lists, variable lists, etc.).
-function Parser:isComma()
-  local token = self.currentToken
-  return token and token.kind == "Comma"
-end
-
--- Checks if the current token is a recognized unary operator.
--- Uses the `self.CONFIG.UNARY_OPERATORS` lookup table.
 function Parser:isUnaryOperator()
   local token = self.currentToken
-  return token
-        and (token.kind == "Operator" or token.kind == "Keyword")
+  return (token.kind == "Operator" or token.kind == "Keyword")
         and self.CONFIG.UNARY_OPERATORS[token.value]
 end
 
--- Checks if the current token is a recognized binary operator.
--- Uses the `self.CONFIG.BINARY_OPERATORS` lookup table.
 function Parser:isBinaryOperator()
   local token = self.currentToken
-  return token
-        and (token.kind == "Operator" or token.kind == "Keyword")
+  return (token.kind == "Operator" or token.kind == "Keyword")
         and self.CONFIG.BINARY_OPERATORS[token.value]
 end
 
@@ -1244,44 +1214,37 @@ end
 -- These functions check the current token's kind or value without consuming it.
 -- Useful for making parsing decisions ("Is the next thing an identifier?").
 
--- Checks if the current token has the expected kind. Throws an error otherwise.
 function Parser:expectTokenKind(expectedKind)
-  if self:checkTokenKind(expectedKind) then
-    local previousToken = self.currentToken
-    self:consume(1) -- Advance to the next token.
-    return previousToken
+  if not self:checkCurTokenKind(expectedKind) then
+    -- No match? Syntax error.
+    self:error(
+      string.format(
+        "Expected a %s, but found %s",
+        tostring(expectedKind),
+        tostring(self.currentToken.kind)
+      )
+    )
   end
 
-  -- No match? Syntax error.
-  local actualKind = self.currentToken.kind
-  self:error(
-    string.format(
-      "Expected a %s, but found %s",
-      tostring(expectedKind),
-      tostring(actualKind)
-    )
-  )
+  -- Advance to the next token.
+  self:consume(1)
 end
 
--- Checks if the current token is a 'Keyword' kind with the expected value.
--- Throws an error otherwise.
 function Parser:expectKeyword(keyword)
-  local token = self.currentToken
-
   -- Check if the current token is a keyword and matches the value.
-  if self:checkKeyword(keyword) then
-    self:consume(1) -- Advance to the next token.
-    return true
+  if not self:checkKeyword(keyword) then
+    -- No match? Syntax error.
+    self:error(
+      string.format(
+        "Expected keyword '%s', but found %s",
+        keyword,
+        self:getTokenDescription(self.currentToken)
+      )
+    )
   end
 
-  -- No match? Syntax error.
-  self:error(
-    string.format(
-      "Expected keyword '%s', but found %s",
-      keyword,
-      self:getTokenDescription(token)
-    )
-  )
+  -- Match! Consume the keyword token.
+  self:consume(1) -- Advance to the next token.
 end
 
 --// AST Node Checkers //--
@@ -1298,13 +1261,17 @@ end
 -- These functions are responsible for parsing specific syntactic constructs
 -- in the token stream and building the corresponding AST nodes.
 
+-- Consumes an identifier token and returns its value.
 function Parser:consumeIdentifier()
-  local identifierValue = self:expectTokenKind("Identifier").value
-  return identifierValue
+  local currentToken = self.currentToken
+  self:expectTokenKind("Identifier")
+  return currentToken.value
 end
 
+-- Consumes a variable reference and resolves its type (Local, Upvalue, or Global).
 function Parser:consumeVariable()
-  local variableName = self:expectTokenKind("Identifier").value
+  local variableName = self.currentToken.value
+  self:expectTokenKind("Identifier")
   local variableType = self:getVariableType(variableName)
 
   return { kind = "Variable",
@@ -1317,18 +1284,23 @@ end
 -- Consumes the identifier tokens and commas.
 -- Example: `a, b, c` -> returns `{"a", "b", "c"}`
 function Parser:consumeIdentifierList()
-  local identifiers = {}
+  -- The first token must be an identifier, consume it.
+  local identifiers = { self:consumeIdentifier() }
+  if not self:isComma() then
+    -- It's a single identifier, return immediately.c
+    return identifiers
+  end
+  self:consume(1) -- Consume the comma.
 
-  -- Loop as long as the current token is an identifier.
-  while self.currentToken and self.currentToken.kind == "Identifier" do
-    -- Add the identifier's value (name) to the list.
-    table.insert(identifiers, self.currentToken.value)
-    self:consume(1) -- Consume the identifier token.
+  -- Loop to consume additional identifiers separated by commas.
+  while true do
+    local identifier = self:consumeIdentifier()
+    table.insert(identifiers, identifier)
+    if not self:isComma() then
+      break
+    end
 
-    -- Check if the current token is a comma. If not, the list ends after
-    -- the current identifier.
-    if not self:isComma() then break end
-    self:consume(1) -- Consume the comma and continue the loop.
+    self:consume(1) -- Consume the comma.
   end
 
   return identifiers
@@ -1342,38 +1314,45 @@ end
 function Parser:consumeParameters()
   self:consumeToken("LeftParen") -- Expect and consume the opening parenthesis.
 
-  local parameters = {} -- List of parameter names.
-  local isVararg = false -- Flag for varargs.
+  local parameters = {}
+  local isVararg   = false
 
-  -- Loop as long as the current token is NOT the closing parenthesis.
-  while self.currentToken and not self:checkTokenKind("RightParen") do
-    -- Check for regular named parameters (must be identifiers).
-    if self.currentToken.kind == "Identifier" then
+  -- Fast path: Check for immediate closing parenthesis.
+  if self:checkCurTokenKind("RightParen") then
+    self:consume(1) -- Consume the closing parenthesis.
+    return parameters, isVararg
+  end
+
+  -- Okay, there's at least one parameter, start the loop.
+  while true do
+    -- Is it a named parameter?
+    if self:checkCurTokenKind("Identifier") then
       -- Add the parameter name to the list.
       table.insert(parameters, self.currentToken.value)
       self:consume(1) -- Consume the identifier token.
 
-    -- Check for the vararg token "...".
-    elseif self.currentToken.kind == "Vararg" then
+    -- Is it a vararg parameter?
+    elseif self:checkCurTokenKind("Vararg") then
       isVararg = true -- Set the vararg flag.
-      self:consumeToken("Vararg") -- Expect and consume the "..." token.
+      self:consume(1) -- Consume the "..." token.
       -- According to Lua grammar, "..." must be the last parameter.
-      break -- Exit the loop after consuming vararg.
+      break
 
-    -- If it's neither an identifier nor vararg, it's a syntax error.
     else
-       self:error(
-        "Expected parameter name or '...' in parameter list, but found: " ..
-        tostring(self.currentToken.kind)
+      self:error(
+        string.format(
+          "Expected parameter name or '...', but got: %s",
+          self:getTokenDescription(self.currentToken)
+        )
       )
     end
 
-    -- After a parameter, we expect a comma, unless it's the last parameter
-    -- before the closing parenthesis. Check if the current token is a comma.
-    -- If not, break the loop (assuming it's the closing paren).
-    if not self:isComma() then break end
-    self:consume(1) -- Consume the comma.
-  end -- Loop ends when ')' is encountered or after consuming '...'.
+    if self.currentToken.kind == "RightParen" then
+      break -- End of parameter list.
+    elseif self:isComma() then
+      self:consume(1) -- Consume the comma and continue.
+    end
+  end
   self:consumeToken("RightParen")
 
   return parameters, isVararg
@@ -1387,7 +1366,7 @@ function Parser:consumeIndexExpression(currentExpression)
   local indexExpression
 
   -- table.key syntax.
-  if self:checkTokenKind("Dot") then
+  if self:checkCurTokenKind("Dot") then
     self:consume(1) -- Consume the '.' character.
     local identifier = self:consumeIdentifier()
     indexExpression = { kind = "StringLiteral",
@@ -1415,6 +1394,8 @@ function Parser:consumeIndexExpression(currentExpression)
   }
 end
 
+-- Parses a table constructor expression (e.g., {1, 2, key = value}).
+-- Handles explicit keys, identifier keys, and implicit numeric keys.
 function Parser:consumeTable()
   self:consumeToken("LeftBrace")
 
@@ -1422,25 +1403,30 @@ function Parser:consumeTable()
   local tableElements      = {}
 
   -- Loop through tokens until we find the closing "}".
-  while self.currentToken and not self:checkTokenKind("RightBrace") do
+  while not self:checkCurTokenKind("RightBrace") do
     local key, value
     local isImplicitKey = false
 
     -- Determine which kind of table field we are parsing.
-    if self:checkTokenKind("LeftBracket") then
-      -- Explicit key in brackets, e.g., `[1+2] = "value"`.
-      -- [<expression>] = <expression>
+
+    -- Explicit key in brackets, e.g., `[1+2] = "value"`.
+    -- [<expression>] = <expression>
+    if self:checkCurTokenKind("LeftBracket") then
       self:consume(1) -- Consume "["
       key = self:consumeExpression()
       self:expectTokenKind("RightBracket")
       self:expectTokenKind("Equals")
       value = self:consumeExpression()
 
-    elseif self:checkTokenKind("Identifier") and
-           self:checkTokenKind("Equals", self:lookAhead(1)) then
-      -- Identifier key, e.g., `name = "value"`.
-      -- This is syntatic sugar for `["name"] = "value"`.
-      -- <identifier> = <expression>
+    -- Identifier key, e.g., `name = "value"`.
+    -- This is syntactic sugar for `["name"] = "value"`.
+    -- <identifier> = <expression>
+    --
+    -- This is the only part of the parser that requires lookahead.
+    -- We could potentially use left factoring to avoid it, but it would
+    -- complicate the parser for little gain.
+    elseif self:checkCurTokenKind("Identifier") and
+           self:lookAhead().kind == "Equals" then
       key = { kind = "StringLiteral",
         value = self.currentToken.value
       }
@@ -1448,10 +1434,10 @@ function Parser:consumeTable()
       self:consume(1) -- Consume the "=".
       value = self:consumeExpression()
 
+    -- Implicit numeric key, e.g. `"value1", MY_VAR, 42`
+    -- This is syntactic sugar for `[1] = "value1", [2] = MY_VAR, [3] = 42`.
+    -- <expression>
     else
-      -- Implicit numeric key, e.g. `"value1", MY_VAR, 42`
-      -- This is syntatic sugar for `[1] = "value1", [2] = MY_VAR, [3] = 42`.
-      -- <expression>
       isImplicitKey = true
       key = { kind = "NumericLiteral",
         value = implicitKeyCounter
@@ -1460,7 +1446,6 @@ function Parser:consumeTable()
       value = self:consumeExpression()
     end
 
-    -- Create the AST node for this table element.
     local element = { kind = "TableElement",
       key           = key,
       value         = value,
@@ -1469,12 +1454,13 @@ function Parser:consumeTable()
 
     table.insert(tableElements, element)
 
-    -- Table elements can be separated by "," or ";". If no separator is
-    -- found, we assume it's the end of the table definition.
-    if not (self:checkTokenKind("Comma") or self:checkTokenKind("Semicolon")) then
+    -- Table elements can be separated by "," or ";". If we see one, consume it
+    -- and continue parsing more elements. Otherwise, we're done.
+    if self:checkCurTokenKind("Comma") or self:checkCurTokenKind("Semicolon") then
+      self:consume(1) -- Consume the separator.
+    else
       break
     end
-    self:consume(1) -- Consume the separator.
   end
 
   self:consumeToken("RightBrace")
@@ -1484,6 +1470,16 @@ function Parser:consumeTable()
   }
 end
 
+-- Parses a function call expression (e.g., f(x, y), f"hello", f{1,2}), and
+-- returns an AST node.
+--
+-- `currentExpression` is the AST node representing the function being called.
+-- `isMethodCall` indicates if the node should be marked as a method call.
+--
+-- It parses the following forms:
+--   f(a, b)      -- Explicit call with parentheses
+--   f "string"   -- Implicit call with a single string argument
+--   f {table}    -- Implicit call with a single table argument
 function Parser:consumeFunctionCall(currentExpression, isMethodCall)
   local currentToken     = self.currentToken
   local currentTokenKind = currentToken.kind
@@ -1515,6 +1511,11 @@ function Parser:consumeFunctionCall(currentExpression, isMethodCall)
   }
 end
 
+-- Parses a method call expression (e.g., `object:method(args)`), and
+-- returns an AST node.
+--
+-- `currentExpression` is the AST node representing the object on which
+-- the method is being called.
 function Parser:consumeMethodCall(currentExpression)
   self:consumeToken("Colon") -- Expect and consume the colon (':').
   local methodName = self:consumeIdentifier()
@@ -1532,26 +1533,37 @@ function Parser:consumeMethodCall(currentExpression)
   return self:consumeFunctionCall(methodIndexNode, true)
 end
 
+-- Consumes an optional semicolon if present.
+-- (Lua allows optional semicolons between statements.)
 function Parser:consumeOptionalSemicolon()
-  if self:checkTokenKind("Semicolon") then
+  if self:checkCurTokenKind("Semicolon") then
     self:consume(1)
   end
 end
 
 --// Expression Parsers //--
+
+-- Parses a primary expression (literal, variable, etc.).
+-- This is the base of the expression hierarchy.
 function Parser:parsePrimaryExpression()
   local currentToken = self.currentToken
-  if not currentToken then return end
-
-  local tokenKind  = currentToken.kind
-  local tokenValue = currentToken.value
+  local tokenKind    = currentToken.kind
+  local tokenValue   = currentToken.value
 
   if tokenKind == "Number" then
+    local tokenRaw = currentToken.raw
     self:consume(1)
-    return { kind = "NumericLiteral", value = tokenValue }
+    return { kind = "NumericLiteral",
+      value = tokenValue,
+      raw   = tokenRaw
+    }
   elseif tokenKind == "String" then
+    local tokenRaw = currentToken.raw
     self:consume(1)
-    return { kind = "StringLiteral", value = tokenValue }
+    return { kind = "StringLiteral",
+      value = tokenValue,
+      raw   = tokenRaw
+    }
   elseif tokenKind == "Vararg" then
     self:consume(1)
     return { kind = "VarargExpression" }
@@ -1570,7 +1582,7 @@ function Parser:parsePrimaryExpression()
     elseif tokenValue == "function" then
       self:consume(1) -- Consume 'function'.
       local parameters, isVararg = self:consumeParameters()
-      local body = self:parseCodeBlock(true, parameters)
+      local body = self:parseFunctionBlock(parameters)
       self:expectKeyword("end")
       return { kind = "FunctionExpression",
         body       = body,
@@ -1609,16 +1621,20 @@ function Parser:parsePrimaryExpression()
   return nil
 end
 
+-- Parses a prefix expression with possible suffixes (function calls, indexing).
+-- Handles chaining of calls and accesses (e.g., `obj:method().field["key"]`).
 function Parser:parsePrefixExpression()
   local primaryExpression = self:parsePrimaryExpression() -- <primary>
   if not primaryExpression then return end
 
-  -- <suffix>*
-  while (true) do
-    local currentToken = self.currentToken
-    if not currentToken then break end
-
+  -- [ <suffix> ]*
+  while true do
+    local currentToken     = self.currentToken
     local currentTokenKind = currentToken.kind
+
+    -- Optimization: Instead of using self:checkTokenKind() here, we directly
+    -- access self.currentToken for performance reasons, as function calls
+    -- can add overhead in tight loops.
 
     -- Function call.
     if currentTokenKind == "LeftParen" then
@@ -1654,6 +1670,8 @@ function Parser:parsePrefixExpression()
   return primaryExpression
 end
 
+-- Parses a unary operator expression (e.g., `-x`, `not y`).
+-- If a unary operator is not found, it falls back to parsing a primary expression.
 function Parser:parseUnaryOperator()
   -- <unary> ::= <unary operator> <unary> | <primary>
   if not self:isUnaryOperator() then
@@ -1661,41 +1679,39 @@ function Parser:parseUnaryOperator()
   end
 
   -- <unary operator> <unary>
-  local operator = self.currentToken
+  local operator = self.currentToken.value
   self:consume(1) -- Consume the operator
-  local expression = self:parseBinaryExpression(self.CONFIG.UNARY_PRECEDENCE)
-  if not expression then self:error("Unexpected end") end
+  local operand = self:parseBinaryExpression(self.CONFIG.UNARY_PRECEDENCE)
+  if not operand then self:error("Unexpected end") end
 
   return { kind = "UnaryOperator",
-    operator = operator.value,
-    operand  = expression
+    operator = operator,
+    operand  = operand
   }
 end
 
+-- Parses a binary operator expression using the Precedence Climbing algorithm.
+-- `minPrecedence` controls the minimum binding power for operators to consider.
 function Parser:parseBinaryExpression(minPrecedence)
   -- <binary> ::= <unary> <binary_operator> <binary> | <unary>
   local expression = self:parseUnaryOperator() -- <unary>
   if not expression then return end
 
   -- [<binary_operator> <binary>]
-  while true do
-    local operatorToken = self.currentToken
-    if not operatorToken then break end
-
-    local precedence = self.CONFIG.PRECEDENCE[operatorToken.value]
-    if not self:isBinaryOperator() or precedence[1] <= minPrecedence then
+  while self:isBinaryOperator() do
+    local operator   = self.currentToken.value
+    local precedence = self.CONFIG.PRECEDENCE[operator]
+    if precedence[1] <= minPrecedence then
       break
     end
-
-    -- The <binary operator> <binary> part itself
-    local nextToken = self:consume(1) -- Advance to and consume the operator
-    if not nextToken then self:error("Unexpected end") end
+    self:consume(1) -- Consume the operator token.
 
     local right = self:parseBinaryExpression(precedence[2])
     if not right then self:error("Unexpected end") end
 
-    expression = { kind = "BinaryOperator",
-      operator = operatorToken.value,
+   -- Construct a binary operator AST node.
+   expression = { kind = "BinaryOperator",
+      operator = operator,
       left     = expression,
       right    = right
     }
@@ -1704,10 +1720,13 @@ function Parser:parseBinaryExpression(minPrecedence)
   return expression
 end
 
+-- Parses a single expression (entry point for expression parsing).
+-- Returns nil if no valid expression is found.
 function Parser:consumeExpression()
   return self:parseBinaryExpression(0)
 end
 
+-- Parses a comma-separated list of expressions.
 function Parser:consumeExpressions()
   -- Make an expression list and consume the first expression.
   local expressionList = { self:consumeExpression() }
@@ -1718,6 +1737,10 @@ function Parser:consumeExpressions()
   while self:isComma() do
     self:consume(1) -- Consume the comma (',').
     local expression = self:consumeExpression()
+    if not expression then
+      self:error("Expected an expression after ','")
+    end
+
     table.insert(expressionList, expression)
   end
 
@@ -1725,6 +1748,9 @@ function Parser:consumeExpressions()
 end
 
 --// STATEMENT PARSERS //--
+
+-- Parses a local variable or function declaration.
+-- Handles both 'local var = value' and 'local function name() end' forms.
 function Parser:parseLocalStatement()
   -- local <ident_list> [= <expr_list>]
   -- local function <ident>(<params>) <body> end
@@ -1737,7 +1763,7 @@ function Parser:parseLocalStatement()
     local functionName = self:consumeIdentifier()
     local parameters, isVararg = self:consumeParameters()
     self:declareLocalVariable(functionName)
-    local body = self:parseCodeBlock(true, parameters)
+    local body = self:parseFunctionBlock(parameters)
     self:expectKeyword("end")
 
     -- Unlike non-local function declarations (which desugar to assignments),
@@ -1757,24 +1783,24 @@ function Parser:parseLocalStatement()
         isVararg   = isVararg
       }
     }
-  else
-    -- It's a regular local variable declaration.
-    -- <ident_list> [= <expr_list>]
-    local variables = self:consumeIdentifierList()
-    local initializers = {}
-
-    -- Check for optional expressions.
-    if self:checkTokenKind("Equals") then
-      self:consume(1)
-      initializers = self:consumeExpressions()
-    end
-
-    self:declareLocalVariables(variables)
-    return { kind = "LocalDeclarationStatement",
-      variables    = variables,
-      initializers = initializers
-    }
   end
+
+  -- It's a regular local variable declaration.
+  -- <ident_list> [= <expr_list>]
+  local variables = self:consumeIdentifierList()
+  local initializers = {}
+
+  -- Check for optional expressions.
+  if self:checkCurTokenKind("Equals") then
+    self:consume(1)
+    initializers = self:consumeExpressions()
+  end
+
+  self:declareLocalVariables(variables)
+  return { kind = "LocalDeclarationStatement",
+    variables    = variables,
+    initializers = initializers
+  }
 end
 
 function Parser:parseWhileStatement()
@@ -1782,7 +1808,7 @@ function Parser:parseWhileStatement()
   self:consumeToken("Keyword", "while")
   local condition = self:consumeExpression()
   self:expectKeyword("do")
-  local body = self:parseCodeBlock()
+  local body = self:parseLoopBlock()
   self:expectKeyword("end")
 
   return { kind = "WhileStatement",
@@ -1799,8 +1825,11 @@ function Parser:parseRepeatStatement()
   -- inside the `repeat ... until` block to be used in the `until` condition.
   -- Therefore, we enter the scope before parsing the code block,
   -- but we only exit the scope after parsing the condition.
-  self:enterScope()
+  --
+  -- isFunctionScope: false, isLoopScope: true
+  self:enterScope(false, true)
   local body = self:parseCodeBlockInCurrentScope()
+
   -- Don't exit the scope yet as its variables can still be used in the condition.
   self:consumeToken("Keyword", "until")
   local condition = self:consumeExpression()
@@ -1836,6 +1865,10 @@ end
 function Parser:parseBreakStatement()
   -- break
   self:consumeToken("Keyword", "break")
+  if not self:canBreak() then
+    self:error("'break' statement not inside a loop")
+  end
+
   return { kind = "BreakStatement" }
 end
 
@@ -1888,6 +1921,8 @@ function Parser:parseIfStatement()
   }
 end
 
+-- Parses a for loop (either numeric or generic iterator-based).
+-- Distinguishes between 'for i=1,10' and 'for k,v in pairs(t)' forms.
 function Parser:parseForStatement()
   -- for <var> = <start_expr>, <limit_expr> [, <step_expr>] do ... end
   -- for <ident_list> in <expr_list> do ... end
@@ -1897,14 +1932,15 @@ function Parser:parseForStatement()
   -- At this point, we must distinguish between a generic `for` loop
   -- (e.g., `for i, v in pairs(t)`) and a numeric `for` loop `(e.g., `for i = 1, 10`).
   -- The presence of a comma or the `in` keyword signals a generic loop.
-  if self:checkTokenKind("Comma") or self:checkKeyword("in") then
+  if self:checkCurTokenKind("Comma") or self:checkKeyword("in") then
     -- It's a generic 'for' loop.
-    -- Even though the generic for loop allows infinite expressions after `in`,
-    -- the Lua VM only uses the first three (the generator, state, and control).
+    -- Even though the generic "for" loop allows infinite expressions after `in`,
+    -- the Lua VM only uses the first three return values from the expression(s)
+    -- for the iterator, state, and control variable.
 
     -- Parse the list of iterator variables.
     local iteratorVariables = { variableName }
-    while self:checkTokenKind("Comma") do
+    while self:checkCurTokenKind("Comma") do
       self:consumeToken("Comma")
       local newVariableName = self:consumeIdentifier()
       table.insert(iteratorVariables, newVariableName)
@@ -1916,7 +1952,7 @@ function Parser:parseForStatement()
 
     -- Parse the loop body.
     self:consumeToken("Keyword", "do")
-    local body = self:parseCodeBlock(false, iteratorVariables)
+    local body = self:parseLoopBlock(iteratorVariables)
     self:expectKeyword("end")
 
     return { kind = "ForGenericStatement",
@@ -1946,7 +1982,7 @@ function Parser:parseForStatement()
 
   -- Parse the loop body.
   self:consumeToken("Keyword", "do")
-  local body = self:parseCodeBlock(false, { variableName })
+  local body = self:parseLoopBlock({ variableName })
   self:expectKeyword("end")
 
   return { kind = "ForNumericStatement",
@@ -1958,6 +1994,14 @@ function Parser:parseForStatement()
   }
 end
 
+-- Parses a function declaration (both methods and regular functions).
+--
+-- It parses the following forms:
+--   function func(params) ... end
+--   function tb.method(params) ... end
+--   function tb:method(params) ... end
+--
+-- Desugars into an assignment statement for consistency.
 function Parser:parseFunctionDeclaration()
   -- function <name>[.<field>]*[:<method>](<params>) <body> end
   self:consumeToken("Keyword", "function")
@@ -1967,9 +2011,9 @@ function Parser:parseFunctionDeclaration()
 
   -- This loop handles `.field` and `:method` parts.
   local isMethodDeclaration = false
-  while self.currentToken do
-    local isDot   = self:checkTokenKind("Dot")
-    local isColon = self:checkTokenKind("Colon")
+  while true do
+    local isDot   = self:checkCurTokenKind("Dot")
+    local isColon = self:checkCurTokenKind("Colon")
 
     if not (isDot or isColon) then
       break -- The name chain has ended.
@@ -1999,7 +2043,7 @@ function Parser:parseFunctionDeclaration()
   end
 
   -- Parse the function body and construct the final AST node.
-  local body = self:parseCodeBlock(true, parameters)
+  local body = self:parseFunctionBlock(parameters)
   self:expectKeyword("end")
 
   -- Non-local function declarations desugar to assignment statements.
@@ -2018,6 +2062,8 @@ function Parser:parseFunctionDeclaration()
   }
 end
 
+-- Parses an assignment statement given the first lvalue.
+-- Handles multiple lvalues: a, b.c, d[e] = expr1, expr2, expr3
 function Parser:parseAssignment(lvalue)
   -- <lvalue_list> = <expr_list>
 
@@ -2025,7 +2071,7 @@ function Parser:parseAssignment(lvalue)
   -- We've already parsed the first lvalue. Now we parse the rest of the list.
   local lvalues = { lvalue }
   while self:isComma() do
-    self:consume(1) -- Consume the `,`
+    self:consume(1) -- Consume the comma (',')
 
     -- Parse the next potential lvalue in the list.
     local nextLValue = self:parsePrefixExpression()
@@ -2045,13 +2091,14 @@ function Parser:parseAssignment(lvalue)
   self:expectTokenKind("Equals")
   local expressions = self:consumeExpressions()
 
-  return {
-    kind        = "AssignmentStatement",
+  return { kind = "AssignmentStatement",
     lvalues     = lvalues,
     expressions = expressions
   }
 end
 
+-- Parses a statement that begins with an expression (function call or assignment).
+-- These are the only valid expression-statements in Lua.
 function Parser:parseFunctionCallOrAssignmentStatement()
   -- This function handles statements that begin with an expression.
   -- In Lua, these can only be variable assignments or function calls.
@@ -2067,7 +2114,6 @@ function Parser:parseFunctionCallOrAssignmentStatement()
   end
 
   -- Check if it's a function call statement (e.g., `myFunc()`).
-  --- @diagnostic disable-next-line: need-check-nil
   if expression.kind == "FunctionCall" then
     return { kind = "CallStatement",
       expression = expression
@@ -2075,17 +2121,19 @@ function Parser:parseFunctionCallOrAssignmentStatement()
   end
 
   -- Check if it's the start of an assignment (e.g., `myVar = ...`).
-  -- Only Variable and TableIndex nodes can be lvalues.
+  -- Only Variable and IndexExpression nodes can be lvalues.
   if self:isValidAssignmentLvalue(expression) then
-    -- The expression is a valid lvalue, so proceed to parse the rest of the assignment.
     return self:parseAssignment(expression)
   end
 
   -- If we reach here, the expression is not a valid statement.
   -- For example, a line like `x + 1` is a valid expression but not a valid statement.
-  --- @diagnostic disable-next-line: need-check-nil
-  self:error("Invalid statement: syntax error near '" .. expression.kind ..
-             "'. Only function calls and assignments can be statements.")
+  self:error(
+    string.format(
+      "Invalid statement: expected a variable or function call, but got '%s'",
+      expression.kind
+    )
+  )
 end
 
 --// CODE BLOCK PARSERS //--
@@ -2102,7 +2150,7 @@ function Parser:getNextNode()
   local currentToken = self.currentToken
   local tokenKind    = currentToken.kind
   if tokenKind == "Keyword" then
-    local keyword = self.currentToken.value
+    local keyword = currentToken.value
 
     -- First, check for keywords that terminate a block. If found, we stop
     -- parsing this block and let the parent parser handle the keyword.
@@ -2139,9 +2187,10 @@ end
 -- used in the `until`s expression.
 function Parser:parseCodeBlockInCurrentScope()
   local node = { kind = "Block", statements = {} }
-  local nodeList = node.statements
+  local nodeList  = node.statements
+  local nodeCount = 0
 
-  while self.currentToken do
+  while true do
     -- Parse statements one by one until a terminator is found.
     local nextNode = self:getNextNode()
     if not nextNode then
@@ -2149,28 +2198,40 @@ function Parser:parseCodeBlockInCurrentScope()
       break
     end
 
-    table.insert(nodeList, nextNode)
+    -- Optimization: Avoid using table.insert in a loop, which can be slow.
+    nodeCount = nodeCount + 1
+    nodeList[nodeCount] = nextNode
   end
 
   return node
 end
 
-function Parser:parseCodeBlock(isFunctionScope, codeBlockVariables)
-  -- Each block gets its own variable scope.
-  self:enterScope(isFunctionScope)
-  if codeBlockVariables then
-    -- Pre-declare variables for this scope.
-    -- (e.g. function parameters, for-loop variables).
-    self:declareLocalVariables(codeBlockVariables)
+-- Parses a code block, managing scope entry and exit.
+-- variables: optional list of local variables to declare in the block.
+-- isFunctionScope: whether this block is a function scope.
+-- isLoopScope: whether this block is a loop scope.
+function Parser:parseCodeBlock(variables, isFunctionScope, isLoopScope)
+  self:enterScope(isFunctionScope, isLoopScope)
+  if variables then
+    self:declareLocalVariables(variables)
   end
-
   local blockNode = self:parseCodeBlockInCurrentScope()
-
   self:exitScope()
   return blockNode
 end
 
+function Parser:parseFunctionBlock(parameters)
+  return self:parseCodeBlock(parameters, true, false)
+end
+
+function Parser:parseLoopBlock(variables)
+  return self:parseCodeBlock(variables, false, true)
+end
+
 --// MAIN //--
+
+-- Main entry point for parsing.
+-- Returns the complete AST wrapped in a Program node.
 function Parser:parse()
   local blockNode = self:parseCodeBlock()
   self:consumeToken("EOF") -- Ensure we've reached the end of the input.
