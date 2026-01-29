@@ -4083,14 +4083,12 @@ end
 local unpack = (unpack or table.unpack) -- Lua 5.1/5.2+ compatibility.
 local USE_CURRENT_TOP = 0
 
+-- Number of list items to accumulate before a SETLIST instruction.
+local FIELDS_PER_FLUSH = 50
+
 --* VirtualMachine *--
 local VirtualMachine = {}
 VirtualMachine.__index = VirtualMachine -- Set up for method calls via `.`.
-
-VirtualMachine.CONFIG = {
-  -- Number of list items to accumulate before a SETLIST instruction.
-  FIELDS_PER_FLUSH = 50
-}
 
 --// VirtualMachine Constructor //--
 function VirtualMachine.new(proto)
@@ -4514,7 +4512,7 @@ end
         error("SETLIST with C=0 is not supported in this VM implementation")
       end
 
-      local offset = (c - 1) * self.CONFIG.FIELDS_PER_FLUSH
+      local offset = (c - 1) * FIELDS_PER_FLUSH
       for i = 1, len do
         targetTable[offset + i] = stack[a + i]
       end
