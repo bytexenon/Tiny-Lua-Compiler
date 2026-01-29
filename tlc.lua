@@ -4142,12 +4142,11 @@ VirtualMachine.__index = VirtualMachine -- Set up for method calls via `.`.
 
 --// VirtualMachine Constructor //--
 function VirtualMachine.new(proto)
-  local self = setmetatable({}, VirtualMachine)
-
-  self.mainProto = proto -- Should only be used in `:execute()`.
-  self.closure   = nil   -- Current closure we're working with.
-
-  return self
+  --// Initialization //--
+  return setmetatable({
+    mainProto = proto, -- Should only be used in `:execute()`.
+    closure   = nil    -- Current closure we're working with.
+  }, VirtualMachine)
 end
 
 --// Auxiliary functions //--
@@ -4239,8 +4238,8 @@ function VirtualMachine:executeClosure(...)
     -- OP_LOADBOOL [A, B, C]    R(A) := (Bool)B; if (C) pc++
     -- Load a boolean into a register.
     elseif opname == "LOADBOOL" then
-      stack[a] = (b == 1)
-      if c == 1 then
+      stack[a] = (b ~= 0)
+      if c ~= 0 then
         pc = pc + 1
       end
 
@@ -4361,7 +4360,7 @@ function VirtualMachine:executeClosure(...)
     -- Conditional jump based on equality.
     elseif opname == "EQ" then
       local isEqual = rk(b) == rk(c)
-      local bool = (a == 1)
+      local bool = (a ~= 0)
       if isEqual ~= bool then
         pc = pc + 1
       end
@@ -4370,7 +4369,7 @@ function VirtualMachine:executeClosure(...)
     -- Conditional jump based on less-than comparison.
     elseif opname == "LT" then
       local isLessThan = rk(b) < rk(c)
-      local bool = (a == 1)
+      local bool = (a ~= 0)
       if isLessThan ~= bool then
         pc = pc + 1
       end
@@ -4379,7 +4378,7 @@ function VirtualMachine:executeClosure(...)
     -- Conditional jump based on less-than-or-equal comparison.
     elseif opname == "LE" then
       local isLessThanOrEqual = rk(b) <= rk(c)
-      local bool = (a == 1)
+      local bool = (a ~= 0)
       if isLessThanOrEqual ~= bool then
         pc = pc + 1
       end
@@ -4388,7 +4387,7 @@ function VirtualMachine:executeClosure(...)
     -- Boolean test, with a conditional jump.
     -- NOTE: After this instruction, the next instruction will always be a jump.
     elseif opname == "TEST" then
-      local bool = (c == 1)
+      local bool = (c ~= 0)
       if (not stack[a]) == bool then
         pc = pc + 1
       else
@@ -4406,7 +4405,7 @@ function VirtualMachine:executeClosure(...)
     -- Boolean test, with conditional assignment and jump.
     -- NOTE: After this instruction, the next instruction will always be a jump.
     elseif opname == "TESTSET" then
-      local bool = (c == 1)
+      local bool = (c ~= 0)
       if (not stack[b]) == bool then
         stack[a] = stack[b]
 
