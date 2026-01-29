@@ -100,12 +100,18 @@ Because TLC is designed to fit in a single file and be easily understood, we dec
 
 Everything else should work just like standard Lua 5.1!
 
-### Tests
+### Tests & Benchmarking
 
 Run the test suite with:
 
 ```bash
 lua tests/test.lua
+```
+
+Run the benchmarks with:
+
+```bash
+lua benchmarks/benchmark.lua
 ```
 
 ### AST Node Specifications
@@ -115,42 +121,44 @@ The parser generates a tree of nodes. Here is the specification for each node ty
 <details>
 <summary>Click to expand AST Specification</summary>
 
-#### **Literals & Identifiers**
-*   `{ kind = "Variable", name = <string>, variableType = <"Local" | "Global" | "Upvalue"> }`
-*   `{ kind = "StringLiteral", value = <string> }`
-*   `{ kind = "NumericLiteral", value = <number> }`
-*   `{ kind = "BooleanLiteral", value = <bool> }`
-*   `{ kind = "NilLiteral" }`
-*   `{ kind = "VarargExpression" }`
+```lua
+-- Literals & Identifiers
+{ kind = "Variable", name = <string>, variableType = <"Local" | "Global" | "Upvalue"> }
+{ kind = "StringLiteral", value = <string> }
+{ kind = "NumericLiteral", value = <number> }
+{ kind = "BooleanLiteral", value = <bool> }
+{ kind = "NilLiteral" }
+{ kind = "VarargExpression" }
 
-#### **Expressions**
-*   `{ kind = "FunctionExpression", body = <Block>, parameters = <list_of_strings>, isVarArg = <bool> }`
-*   `{ kind = "UnaryOperator", operator = <string>, operand = <node> }`
-*   `{ kind = "BinaryOperator", operator = <string>, left = <node>, right = <node> }`
-*   `{ kind = "FunctionCall", callee = <node>, arguments = <list_of_nodes>, isMethodCall = <bool> }`
-*   `{ kind = "IndexExpression", base = <node>, index = <node>, isPrecomputed = <bool>? }`
-*   `{ kind = "TableConstructor", elements = <list_of_TableElement> }`
-*   `{ kind = "TableElement", key = <node>, value = <node>, isImplicitKey = <bool> }`
-*   `{ kind = "ParenthesizedExpression", expression = <node> }`
+-- Expressions
+{ kind = "FunctionExpression", body = <Block>, parameters = <list_of_strings>, isVarArg = <bool> }
+{ kind = "UnaryOperator", operator = <string>, operand = <node> }
+{ kind = "BinaryOperator", operator = <string>, left = <node>, right = <node> }
+{ kind = "FunctionCall", callee = <node>, arguments = <list_of_nodes>, isMethodCall = <bool> }
+{ kind = "IndexExpression", base = <node>, index = <node>, isPrecomputed = <bool>? }
+{ kind = "TableConstructor", elements = <list_of_TableElement> }
+{ kind = "TableElement", key = <node>, value = <node>, isImplicitKey = <bool> }
+{ kind = "ParenthesizedExpression", expression = <node> }
 
-#### **Statements**
-*   `{ kind = "LocalDeclarationStatement", variables = <list_of_strings>, initializers = <list_of_nodes> }`
-*   `{ kind = "LocalFunctionDeclaration", name = <string>, body = <FunctionExpression> }`
-*   `{ kind = "AssignmentStatement", lvalues = <list_of_nodes>, expressions = <list_of_nodes> }`
-*   `{ kind = "CallStatement", expression = <FunctionCall> }`
-*   `{ kind = "IfClause", condition = <node>, body = <Block> }`
-*   `{ kind = "IfStatement", clauses = <list_of_IfClauses>, elseClause = <Block>? }`
-*   `{ kind = "WhileStatement", condition = <node>, body = <Block> }`
-*   `{ kind = "RepeatStatement", body = <Block>, condition = <node> }`
-*   `{ kind = "ForNumericStatement", variable = <Identifier>, start = <node>, limit = <node>, step = <node>?, body = <Block> }`
-*   `{ kind = "ForGenericStatement", iterators = <list_of_strings>, expressions = <list_of_nodes>, body = <Block> }`
-*   `{ kind = "DoStatement", body = <Block> }`
-*   `{ kind = "ReturnStatement", expressions = <list_of_nodes> }`
-*   `{ kind = "BreakStatement" }`
+-- Statements
+{ kind = "LocalDeclarationStatement", variables = <list_of_strings>, initializers = <list_of_nodes> }
+{ kind = "LocalFunctionDeclaration", name = <string>, body = <FunctionExpression> }
+{ kind = "AssignmentStatement", lvalues = <list_of_nodes>, expressions = <list_of_nodes> }
+{ kind = "CallStatement", expression = <FunctionCall> }
+{ kind = "IfClause", condition = <node>, body = <Block> }
+{ kind = "IfStatement", clauses = <list_of_IfClauses>, elseClause = <Block>? }
+{ kind = "WhileStatement", condition = <node>, body = <Block> }
+{ kind = "RepeatStatement", body = <Block>, condition = <node> }
+{ kind = "ForNumericStatement", variable = <Identifier>, start = <node>, limit = <node>, step = <node>?, body = <Block> }
+{ kind = "ForGenericStatement", iterators = <list_of_strings>, expressions = <list_of_nodes>, body = <Block> }
+{ kind = "DoStatement", body = <Block> }
+{ kind = "ReturnStatement", expressions = <list_of_nodes> }
+{ kind = "BreakStatement" }
 
-#### **Program Structure**
-*   `{ kind = "Block", statements = <list_of_statement> }`
-*   `{ kind = "Program", body = <Block> }`
+-- Program Structure
+{ kind = "Block", statements = <list_of_statement> }
+{ kind = "Program", body = <Block> }
+```
 
 </details>
 
