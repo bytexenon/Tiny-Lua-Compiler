@@ -3624,7 +3624,7 @@ BytecodeEmitter.CONFIG = {
   -- Source: https://www.lua.org/source/5.1/lopcodes.c.html#luaP_opmodes
   -- stylua: ignore
   OPCODE_LOOKUP = {
-    --              Idx  Arg Mode     B Mode    C Mode
+    -- Opname        Idx  Arg Mode    B Mode    C Mode
     ["MOVE"]      = {0,  MODE_iABC,  OP_ARG_R, OP_ARG_N},
     ["LOADK"]     = {1,  MODE_iABx,  OP_ARG_K, OP_ARG_N},
     ["LOADBOOL"]  = {2,  MODE_iABC,  OP_ARG_U, OP_ARG_U},
@@ -3678,13 +3678,10 @@ function BytecodeEmitter.new(mainProto)
     "Expected a valid Lua function prototype for 'mainProto'"
   )
 
-  --// Instance //--
-  local self = setmetatable({}, BytecodeEmitter)
-
   --// Initialization //--
-  self.mainProto = mainProto
-
-  return self
+  return setmetatable({
+    mainProto = mainProto
+  }, BytecodeEmitter)
 end
 
 --// Utility Functions //--
@@ -3697,6 +3694,9 @@ function BytecodeEmitter:frexp(value)
   if math.frexp then return math.frexp(value) end
   if value == 0 then return 0, 0 end
 
+  -- The formula is:
+  --  mantissa = value / (2 ^ exponent)
+  --  exponent = floor(log2(abs(value))) + 1
   local exponent = math.floor(math.log(math.abs(value)) / math.log(2)) + 1
   local mantissa = value / (2 ^ exponent)
   return mantissa, exponent
@@ -3857,7 +3857,8 @@ function BytecodeEmitter:encodeConstant(constantValue)
   local constType = type(constantValue)
 
   if constType == "boolean" then
-    return self:encodeUint8(LUA_TBOOLEAN) .. self:encodeUint8(constantValue and 1 or 0)
+    local boolValue = constantValue and 1 or 0
+    return self:encodeUint8(LUA_TBOOLEAN) .. self:encodeUint8(boolValue)
   elseif constType == "number" then
     return self:encodeUint8(LUA_TNUMBER) .. self:encodeFloat64(constantValue)
   elseif constType == "string" then
@@ -3869,13 +3870,13 @@ end
 
 -- Helper to validate operand ranges.
 -- Prevents silent overflows that would corrupt the bytecode.
-function BytecodeEmitter:validateOperand(value, min, max, operandName, instructionName)
+function BytecodeEmitter:validateOperand(value, min, max, operandName, opname)
   if value < min or value > max then
     error(
       string.format(
         "BytecodeEmitter: Operand %s overflow in instruction '%s'."
         .. " Got %d. Valid range is %d to %d.",
-        operandName, instructionName, value, min, max
+        operandName, opname, value, min, max
       )
     )
   end
@@ -3886,12 +3887,12 @@ end
 --
 -- NOTE: In the binary layout, C (bits 14-22) comes BEFORE B (bits 23-31).
 function BytecodeEmitter:encodeABCInstruction(opcode, a, instruction, argBMode, argCMode)
-  local instructionName = instruction[1]
+  local opname = instruction[1]
   local b, c = instruction[3], instruction[4]
 
   -- Validate operands B and C (9 bits signed: -256 to 255 during RK encoding steps).
-  self:validateOperand(b, -2^8, 2^8 - 1, "B", instructionName)
-  self:validateOperand(c, -2^8, 2^8 - 1, "C", instructionName)
+  self:validateOperand(b, -2^8, 2^8 - 1, "B", opname)
+  self:validateOperand(c, -2^8, 2^8 - 1, "C", opname)
 
   -- Handle RK() operands (register or constant).
   -- If the argument mode is OpArgK, we encode constants specially.
@@ -3915,11 +3916,11 @@ function BytecodeEmitter:encodeABxInstruction(opcode, a, instruction)
   -- Bx is an unsigned 18-bit integer.
   -- Since we use negative indices for constants internally,
   -- we need to convert it to unsigned form.
-  local instructionName = instruction[1]
+  local opname = instruction[1]
   local bx = self:toUnsigned(instruction[3])
 
   -- Validate operand Bx (18 bits unsigned: 0 to 262143).
-  self:validateOperand(bx, 0, 2^18 - 1, "Bx", instructionName)
+  self:validateOperand(bx, 0, 2^18 - 1, "Bx", opname)
 
   -- Shift components to their positions.
   local shiftedA  = self:lshift(a, POS_A)
@@ -3935,11 +3936,11 @@ end
 -- Used for jumps (JMP, FORLOOP).
 -- sBx is a signed 18-bit integer represented in "Excess-K" encoding.
 function BytecodeEmitter:encodeAsBxInstruction(opcode, a, instruction)
-  local instructionName = instruction[1]
+  local opname = instruction[1]
   local b = instruction[3]
 
   -- Validate operand sBx (18 bits signed: -131072 to 131071).
-  self:validateOperand(b, -2^17, 2^17 - 1, "sBx", instructionName)
+  self:validateOperand(b, -2^17, 2^17 - 1, "sBx", opname)
 
   -- sBx Encoding (Bias):
   -- We add a bias of 131071 (2^17 - 1) to the value.
@@ -3970,11 +3971,11 @@ end
 -- B         | 9           | 23            | 23-31 (for iABC)
 function BytecodeEmitter:encodeInstruction(instruction)
   -- First, let's look up the opcode's number and its argument format.
-  local instructionName = tostring(instruction[1] or "<unknown>")
-  local opcodeData      = self.CONFIG.OPCODE_LOOKUP[instructionName]
+  local opname     = tostring(instruction[1] or "<unknown>")
+  local opcodeData = self.CONFIG.OPCODE_LOOKUP[opname]
 
   if not opcodeData then
-    error("BytecodeEmitter: Unsupported instruction '" .. instructionName .. "'")
+    error("BytecodeEmitter: Unsupported instruction '" .. opname .. "'")
   end
 
   -- Unpack opcode data.
@@ -3983,7 +3984,7 @@ function BytecodeEmitter:encodeInstruction(instruction)
   local a = instruction[2]
 
   -- Validate operand A (8 bits unsigned: 0 to 255)
-  self:validateOperand(a, 0, 2^8 - 1, "A", instructionName)
+  self:validateOperand(a, 0, 2^8 - 1, "A", opname)
 
   -- Dispatch to the appropriate encoder based on the instruction mode.
   if opmode == MODE_iABC then
@@ -3995,36 +3996,43 @@ function BytecodeEmitter:encodeInstruction(instruction)
   end
 
   error(
-    "BytecodeEmitter: Unsupported instruction format for '"
-    .. instructionName
-    .. "'"
+    string.format(
+      "BytecodeEmitter: Unsupported instruction format for '%s'.",
+      opname
+    )
   )
 end
 
 -- Serializes the code section of a function prototype.
 function BytecodeEmitter:encodeCodeSection(proto)
-  local codeSection = { }
+  -- Put the 32-bit count of instructions first.
+  local codeSection = { self:encodeUint32(#proto.code) }
   for index, instruction in ipairs(proto.code) do
-    codeSection[index] = self:encodeInstruction(instruction)
+    codeSection[index + 1] = self:encodeInstruction(instruction)
   end
+
   return table.concat(codeSection)
 end
 
 -- Serializes the constant section of a function prototype.
 function BytecodeEmitter:encodeConstantSection(proto)
-  local constantSection = { }
+  -- Put the 32-bit count of constants first.
+  local constantSection = { self:encodeUint32(#proto.constants) }
   for index, constant in ipairs(proto.constants) do
-    constantSection[index] = self:encodeConstant(constant)
+    constantSection[index + 1] = self:encodeConstant(constant)
   end
+
   return table.concat(constantSection)
 end
 
 -- Serializes the nested prototype section of a function prototype.
 function BytecodeEmitter:encodePrototypeSection(proto)
-  local protoSection = { }
+  -- Put the 32-bit count of nested prototypes first.
+  local protoSection = { self:encodeUint32(#proto.protos) }
   for index, childPrototype in ipairs(proto.protos) do
-    protoSection[index] = self:encodePrototype(childPrototype)
+    protoSection[index + 1] = self:encodePrototype(childPrototype)
   end
+
   return table.concat(protoSection)
 end
 
