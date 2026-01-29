@@ -1376,11 +1376,8 @@ function Parser:consumeIndexExpression(currentExpression)
   -- table["key"] syntax.
   else
     self:expectTokenKind("LeftBracket") -- Expect and consume the '[' character.
-    indexExpression = self:consumeExpression()
+    indexExpression = self:expectExpression()
     isPrecomputed   = false
-    if not indexExpression then
-      self:error("Expected an expression inside brackets for table index")
-    end
     self:expectTokenKind("RightBracket")
   end
 
@@ -1413,10 +1410,10 @@ function Parser:consumeTable()
     -- [<expression>] = <expression>
     if self:checkCurTokenKind("LeftBracket") then
       self:consume(1) -- Consume "["
-      key = self:consumeExpression()
+      key = self:expectExpression()
       self:expectTokenKind("RightBracket")
       self:expectTokenKind("Equals")
-      value = self:consumeExpression()
+      value = self:expectExpression()
 
     -- Identifier key, e.g., `name = "value"`.
     -- This is syntactic sugar for `["name"] = "value"`.
@@ -1432,7 +1429,7 @@ function Parser:consumeTable()
       }
       self:consume(1) -- Consume the identifier.
       self:consume(1) -- Consume the "=".
-      value = self:consumeExpression()
+      value = self:expectExpression()
 
     -- Implicit numeric key, e.g. `"value1", MY_VAR, 42`
     -- This is syntactic sugar for `[1] = "value1", [2] = MY_VAR, [3] = 42`.
@@ -1443,7 +1440,7 @@ function Parser:consumeTable()
         value = implicitKeyCounter
       }
       implicitKeyCounter = implicitKeyCounter + 1
-      value = self:consumeExpression()
+      value = self:expectExpression()
     end
 
     local element = { kind = "TableElement",
@@ -1598,11 +1595,8 @@ function Parser:parsePrimaryExpression()
   -- Parenthesized expression, e.g., `(a + b)`.
   elseif tokenKind == "LeftParen" then
     self:consume(1) -- Consume '('
-    local expression = self:consumeExpression()
+    local expression = self:expectExpression()
     self:expectTokenKind("RightParen") -- Expect and consume ')'.
-    if not expression then
-      self:error("Expected an expression inside parentheses")
-    end
 
     -- The "ParenthesizedExpression" node is NOT just for operator precedence.
     -- In Lua, parentheses also force a multi-return expression to adjust to
@@ -1726,6 +1720,16 @@ function Parser:consumeExpression()
   return self:parseBinaryExpression(0)
 end
 
+-- Parses a single expression and throws an error if none is found.
+function Parser:expectExpression()
+  local expression = self:consumeExpression()
+  if not expression then
+    self:error("Expected an expression, but found: " ..
+      self:getTokenDescription(self.currentToken))
+  end
+  return expression
+end
+
 -- Parses a comma-separated list of expressions.
 function Parser:consumeExpressions()
   -- Make an expression list and consume the first expression.
@@ -1736,11 +1740,7 @@ function Parser:consumeExpressions()
   -- they are separated by a comma.
   while self:isComma() do
     self:consume(1) -- Consume the comma (',').
-    local expression = self:consumeExpression()
-    if not expression then
-      self:error("Expected an expression after ','")
-    end
-
+    local expression = self:expectExpression()
     table.insert(expressionList, expression)
   end
 
@@ -1806,7 +1806,7 @@ end
 function Parser:parseWhileStatement()
   -- while <condition_expr> do <body> end
   self:consumeToken("Keyword", "while")
-  local condition = self:consumeExpression()
+  local condition = self:expectExpression()
   self:expectKeyword("do")
   local body = self:parseLoopBlock()
   self:expectKeyword("end")
@@ -1832,7 +1832,7 @@ function Parser:parseRepeatStatement()
 
   -- Don't exit the scope yet as its variables can still be used in the condition.
   self:consumeToken("Keyword", "until")
-  local condition = self:consumeExpression()
+  local condition = self:expectExpression()
   self:exitScope()
 
   return { kind = "RepeatStatement",
@@ -1880,7 +1880,7 @@ function Parser:parseIfStatement()
 
   -- if <condition_expr> then <body>
   self:consumeToken("Keyword", "if")
-  local ifCondition = self:consumeExpression()
+  local ifCondition = self:expectExpression()
   self:consumeToken("Keyword", "then")
   local ifBody = self:parseCodeBlock()
   local clauses = {
@@ -1895,7 +1895,7 @@ function Parser:parseIfStatement()
   while self:checkKeyword("elseif") do
     -- Consume the "elseif" token
     self:consumeToken("Keyword", "elseif")
-    local condition = self:consumeExpression()
+    local condition = self:expectExpression()
     self:expectKeyword("then")
     local body = self:parseCodeBlock()
 
