@@ -901,6 +901,14 @@ function Tokenizer:tokenize()
     end
   end
 
+  -- Append an EOF sentinel so the parser can assume a final token and skip
+  -- nil checks when checking token kinds.
+  table.insert(tokens, {
+    kind  = "EOF",
+    value = nil,
+    raw   = nil
+  })
+
   -- Return the list of collected tokens.
   return tokens
 end
@@ -2087,7 +2095,13 @@ end
 -- function to call based on the current token.
 function Parser:getNextNode()
   local node
-  if self:checkTokenKind("Keyword") then
+
+  -- Optimization: Instead of using self:checkTokenKind() here, we directly
+  -- access self.currentToken for performance reasons, as function calls
+  -- can add overhead in tight loops.
+  local currentToken = self.currentToken
+  local tokenKind    = currentToken.kind
+  if tokenKind == "Keyword" then
     local keyword = self.currentToken.value
 
     -- First, check for keywords that terminate a block. If found, we stop
@@ -2102,6 +2116,9 @@ function Parser:getNextNode()
     end
 
     node = self[handlerName](self) -- e.g., self:parseWhile().
+  elseif tokenKind == "EOF" then
+    -- End of file reached; no more statements to parse.
+    return nil
   else
     -- If the statement doesn't start with a keyword, it must be a
     -- variable assignment or a function call.
@@ -2156,6 +2173,7 @@ end
 --// MAIN //--
 function Parser:parse()
   local blockNode = self:parseCodeBlock()
+  self:consumeToken("EOF") -- Ensure we've reached the end of the input.
 
   return {
     kind = "Program",
