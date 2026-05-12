@@ -43,8 +43,9 @@ local proto = tlc.compileToProto("return 2 + 2")
 -- proto.constants:    constant pool (numbers, strings)
 -- proto.maxStackSize: register count needed
 -- proto.numParams:    number of parameters
+-- proto.numUpvals:    number of upvalues
 -- proto.isVararg:     whether the function uses ...
--- proto.prototypes:   nested function prototypes
+-- proto.protos:       nested function prototypes
 ```
 
 ### `tlc.parse(code)`
@@ -62,7 +63,7 @@ local ast = tlc.parse("local x = 42")
 --       {
 --         kind = "LocalDeclarationStatement",
 --         variables = {"x"},
---         initializers = {{kind = "NumericLiteral", value = 42}}
+--         initializers = {{kind = "NumericLiteral", value = 42, raw = "42"}}
 --       }
 --     }
 --   }
@@ -148,12 +149,10 @@ local generator = tlc.CodeGenerator.new(ast)
 local proto     = generator:generate()
 
 -- Emit bytecode
-local emitter  = tlc.BytecodeEmitter.new(proto)
-local bytecode = emitter:emit()
+local emitter  = tlc.BytecodeEmitter.emit(proto)
 
 -- Run the prototype in TLC's VM
-local vm = tlc.VirtualMachine.new(proto)
-vm:execute()
+local vm = tlc.VirtualMachine.execute(proto)
 ```
 
 ## Full Pipeline Example
