@@ -2131,7 +2131,7 @@ function CodeGenerator:createPrototype(properties)
     numParams = properties.numParams or 0,
     isVararg  = properties.isVararg  or false,
 
-    -- Internal look up tables to avoid O(n) searches when referencing constants
+    -- Internal lookup tables to avoid O(n) searches when referencing constants
     -- and upvalues by name. These will get removed during finalization, since
     -- the VM only needs the lists, not the lookups.
     constantLookup = {}, -- format: {[constant] = index in proto.constants}
