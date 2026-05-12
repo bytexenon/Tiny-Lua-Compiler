@@ -81,7 +81,7 @@ An anonymous function definition. Also used as the `body` field in `LocalFunctio
   kind       = "FunctionExpression",
   body       = <Block>,
   parameters = <list_of_strings>,
-  isVarArg   = <boolean>
+  isVararg   = <boolean>
 }
 ```
 
@@ -121,7 +121,7 @@ A function or method call.
   kind         = "FunctionCall",
   callee       = <node>,
   arguments    = <list_of_nodes>,
-  isMethodCall = <boolean>   -- true for obj:method() syntax
+  isMethodCall = <boolean>?   -- nil by default, true for obj:method() syntax 
 }
 ```
 
@@ -136,11 +136,10 @@ Table field access via `table.key` or `table[expr]`.
   kind          = "IndexExpression",
   base          = <node>,            -- the table
   index         = <node>,            -- the key
-  isPrecomputed = <boolean>          -- true for dot syntax (table.key)
 }
 ```
 
-For dot syntax (`t.key`), `index` is a `StringLiteral` node and `isPrecomputed` is true. For bracket syntax (`t[expr]`), `index` is an arbitrary expression and `isPrecomputed` is false.
+For dot syntax (`t.key`), `index` is a `StringLiteral` node. For bracket syntax (`t[expr]`), `index` is an arbitrary expression.
 
 ### TableConstructor
 
