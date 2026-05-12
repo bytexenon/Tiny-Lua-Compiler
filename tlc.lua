@@ -2332,7 +2332,7 @@ function CodeGenerator:patchJump(fromPC, toPC)
   end
 
   -- NOTE: `JMP` uses the `sBx` operand for the jump offset, but in our table
-  -- it represented as the `b` field for simplicity.
+  -- it is represented as the `b` field for simplicity.
   instruction.b = toPC - (fromPC + 1)
 end
 
