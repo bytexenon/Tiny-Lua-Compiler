@@ -2196,7 +2196,7 @@ function CodeGenerator:freeIfRegister(rkOperand)
   -- Is this a constant? We can't free it.
   if rkOperand < 0 then return end
 
-  -- Register free'ing must happen in strict LIFO (last-in-first-out) order to
+  -- Register freeing must happen in strict LIFO (last-in-first-out) order to
   -- avoid accidentally freeing registers that are still in use. Only the most
   -- recently allocated register can be freed at any given time.
   if rkOperand ~= self.currentScope.allocatedRegisters - 1 then
