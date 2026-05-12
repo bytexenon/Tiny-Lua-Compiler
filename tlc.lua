@@ -2131,7 +2131,7 @@ function CodeGenerator:createPrototype(properties)
     numParams = properties.numParams or 0,
     isVararg  = properties.isVararg  or false,
 
-    -- Internal look up tables to avoid O(n) searches when referencing constants
+    -- Internal lookup tables to avoid O(n) searches when referencing constants
     -- and upvalues by name. These will get removed during finalization, since
     -- the VM only needs the lists, not the lookups.
     constantLookup = {}, -- format: {[constant] = index in proto.constants}
@@ -2332,7 +2332,7 @@ function CodeGenerator:patchJump(fromPC, toPC)
   end
 
   -- NOTE: `JMP` uses the `sBx` operand for the jump offset, but in our table
-  -- it represented as the `b` field for simplicity.
+  -- it is represented as the `b` field for simplicity.
   instruction.b = toPC - (fromPC + 1)
 end
 
