@@ -92,7 +92,7 @@ lua5.1 benchmarks/benchmark.lua
 ### Style
 
 **Do not run any automatic formatter (`stylua`, `lua-fmt`, etc.) on `tlc.lua`.**
-The file is formatted by hand with intentional alignment and spacing. A
+The file is formatted by hand with intentional alignment and spacing. An
 auto-formatted diff will be rejected even if the logic is correct.
 
 - Match existing style in `tlc.lua` exactly - indentation, spacing, alignment.
