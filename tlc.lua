@@ -65,14 +65,16 @@ local function createLookupTable(list)
   return lookup
 end
 
+-- A helper function for creating a trie (prefix tree) from a list of strings.
+--
 -- This structure solves the "Longest Prefix Match" problem. When the tokenizer
 -- encounters a character like `>`, it needs to decide if it's a standalone `>`,
 -- or part of a longer operator like `>=`.
 --
 -- Instead of complex lookahead logic, we traverse this tree. If we can travel
--- deeper (e.g., from `.` to `.`), we continue. If we stop, we know we've
+-- deeper (e.g., from `>` to `=`), we continue. If we stop, we know we've
 -- matched the longest valid operator.
-local function makeTrie(ops)
+local function createTrie(ops)
   local trie = {}
   for _, op in ipairs(ops) do
     local node = trie
@@ -93,7 +95,7 @@ end
 -- Since a byte can only have 256 possible values, we can pre-calculate
 -- the result of the pattern match for every possible character (1-255).
 -- This transforms a regex operation into a simple array lookup.
-local function makePatternLookup(pattern)
+local function createPatternLookup(pattern)
   local lookup = {}
   for code = 1, 255 do
     local char = string.char(code)
@@ -128,9 +130,9 @@ end
 local END_OF_FILE = ""
 
 local TOKENIZER_CONFIG = {
-  DIGIT = makePatternLookup("%d"), -- 0-9
-  WHITESPACE = makePatternLookup("%s"), -- Whitespace (space, newline, etc.)
-  IDENTIFIER_START = makePatternLookup("[%a_]"), -- a-z, A-Z, underscore
+  DIGIT = createPatternLookup("%d"), -- 0-9
+  WHITESPACE = createPatternLookup("%s"), -- Whitespace (space, newline, etc.)
+  IDENTIFIER_START = createPatternLookup("[%a_]"), -- a-z, A-Z, underscore
 
   -- The main lookup table for single-character tokens that can never be part
   -- of a longer operator. Splitting them from UNSAFE_PUNCTUATION speeds up
@@ -166,7 +168,7 @@ local TOKENIZER_CONFIG = {
   -- without hardcoding complex lookahead logic. When we encounter a character
   -- that could start an operator, we traverse the trie to find the longest valid
   -- match.
-  OPERATOR_TRIE = makeTrie({
+  OPERATOR_TRIE = createTrie({
     "^",  "*",  "/",  "%",  "+", "-", "<", ">", "#",
     "<=", ">=", "==", "~=", ".."
   }),
@@ -367,7 +369,8 @@ function Tokenizer:consumeNumber()
     end
   end
 
-  -- Done parsing the number, update the tokenizer's position to the end of the number.
+  -- Done parsing the number, update the tokenizer's
+  -- position to the end of the number.
   self:setCurrentPosition(endPos + 1)
 
   -- Lua forbids identifiers immediately after numbers (e.g., "123abc").
@@ -815,7 +818,7 @@ function Parser.new(tokens)
 
   -- A special flag which gets set to `true` when we encounter either
   -- a `break` statement, or a `return` statement. This is used to prevent
-  -- unreachable code after these statements from being included in the final AST.
+  -- parsing code that syntactically may be correct, but is semantically invalid.
   self.shouldTerminateBlock = false
 
   -- A lookup table that maps statement-starting keywords to their corresponding
@@ -845,9 +848,9 @@ function Parser:peekNext()
 end
 
 function Parser:advance(n)
-  local newTokenIndex    = self.currentTokenIndex + n
+  local newTokenIndex = self.currentTokenIndex + n
   self.currentTokenIndex = newTokenIndex
-  self.currentToken      = self.tokens[newTokenIndex]
+  self.currentToken = self.tokens[newTokenIndex]
 end
 
 function Parser:getTokenDescription(token)
@@ -948,7 +951,7 @@ end
 -- These functions are responsible for parsing specific syntactic constructs
 -- in the token stream and building the corresponding AST nodes.
 
--- `(<parameters>) <function body> end`
+-- `(<parameters>) <body> end`
 function Parser:parseFunctionExpression()
   local parameters, isVararg = self:parseParameterList()
   local body = self:parseCodeBlock()
@@ -983,11 +986,6 @@ function Parser:parseDoEndLoopBlock()
   return body
 end
 
--- Consume and return a bare identifier name.
---
--- This is used in grammar positions that want the raw string
--- (`local x`, `function foo`, `tbl.key` after the dot sugar), not an
--- Identifier AST node.
 function Parser:expectIdentifier()
   local currentToken = self.currentToken
   self:expectKind("Identifier")
@@ -1095,6 +1093,9 @@ end
 --       (syntactic sugar for `["<identifier>"] = <expression>`)
 --   - `<expression>`
 --       (implicit numeric key, automatically increments key)
+--
+-- table fields can be separated by commas or semicolons, and
+-- the final field can optionally have a trailing separator.
 function Parser:parseTableConstructor()
   self:expect("LeftBrace")
 
@@ -1174,32 +1175,32 @@ end
 -- All three end up as the same AST node kind. The only difference is how the
 -- argument list is parsed.
 function Parser:parseCallSuffix(calleeExpression, isMethodCall)
-  local currentToken     = self.currentToken
-  local currentTokenKind = currentToken.kind
+  local curToken     = self.currentToken
+  local curTokenKind = curToken.kind
   local arguments
 
   -- Explicit call with parentheses: `f(a, b)`.
-  if currentTokenKind == "LeftParen" then
+  if curTokenKind == "LeftParen" then
     self:advance(1)
     arguments = self:parseExpressionList()
     self:expect("RightParen")
 
-  -- Implicit call with a string: `print "hello" `
-  elseif currentTokenKind == "String" then
-    self:advance(1)
+  -- Call with a single string argument: `print "hello" `
+  elseif curTokenKind == "String" then
     arguments = { {
       kind  = "StringLiteral",
-      value = currentToken.value
+      value = curToken.value
     } }
+    self:advance(1)
 
-  -- Implicit call with a table: `f {1, 2, 3} `.
-  elseif currentTokenKind == "LeftBrace" then
+  -- Call with a single table constructor argument: `f {1, 2, 3} `.
+  elseif curTokenKind == "LeftBrace" then
     arguments = { self:parseTableConstructor() }
 
   else
     error(string.format(
       "Expected function call arguments (parentheses, string, or table), but got: %s",
-      self:getTokenDescription(currentToken)
+      self:getTokenDescription(curToken)
     ))
   end
 
@@ -1228,12 +1229,12 @@ function Parser:parseMethodCallSuffix(calleeExpression)
   return self:parseCallSuffix(callBaseNode, true)
 end
 
---// Pratt Parser //--
+--// Precedence Climbing Expression Parser //--
 
--- A Pratt parser is an elegant technique for parsing expressions with varying
--- precedence levels and associativity, without needing backtracking or a
--- complicated grammar. Below is the core of the algorithm, which handles all
--- of Lua's expression syntax correctly.
+-- The "Precedence Climbing" algorithm is a powerful technique for parsing
+-- expressions with different precedence levels and associativity, without
+-- needing backtracking or a complicated grammar. Below is the core of the
+-- algorithm, which handles all of Lua's expression syntax correctly.
 --
 -- Lua 5.1 expression term hierarchy:
 --
@@ -1783,6 +1784,8 @@ function Parser:parseCodeBlock()
 
   while true do
     local statementNode = self:parseNextStatement()
+
+    -- Have we reached a termination keyword or end of file (EOF)?
     if not statementNode then
       break
     end
@@ -2364,8 +2367,8 @@ function CodeGenerator:breakable(callback)
 
   callback()
 
-  -- Patch breaks before emitting CLOSE so they land exactly on the cleanup
-  -- instruction when one is needed.
+  -- Patch breaks before emitting CLOSE so they land exactly
+  -- on the cleanup instruction when one is needed.
   self:patchJumpsToHere(self.pendingBreakJumps)
   if #self.pendingBreakJumps > 0 and self.pendingBreakJumps.needClose then
     -- OP_CLOSE [A]    close all variables in the stack up to (>=) R(A)
@@ -2828,11 +2831,8 @@ function CodeGenerator:FunctionExpression(node, register)
 end
 
 function CodeGenerator:IndexExpression(node, register)
-  local baseNode  = node.base
-  local indexNode = node.index
-
-  local baseRegister  = self:compileExpressionNode(baseNode, register)
-  local indexRegister = self:compileConstantOrExpression(indexNode)
+  local baseRegister  = self:compileExpressionNode(node.base, register)
+  local indexRegister = self:compileConstantOrExpression(node.index)
 
   -- OP_GETTABLE [A, B, C]    R(A) := R(B)[RK(C)]
   self:emitInstruction("GETTABLE", baseRegister, baseRegister, indexRegister)
@@ -2899,14 +2899,11 @@ end
 --   ; Variables a, b, c now map to registers R(0), R(1), R(2)
 --
 function CodeGenerator:LocalDeclarationStatement(node)
-  local variables    = node.variables
-  local initializers = node.initializers
+  local baseVariableRegister = self.currentScope.allocatedRegisters - 1
 
-  local variableBaseRegister = self.currentScope.allocatedRegisters - 1
-  self:compileExpressionList(initializers, #variables)
-
-  for index, variableName in ipairs(variables) do
-    self:declareLocalVariable(variableName, variableBaseRegister + index)
+  self:compileExpressionList(node.initializers, #node.variables)
+  for index, variableName in ipairs(node.variables) do
+    self:declareLocalVariable(variableName, baseVariableRegister + index)
   end
 end
 
@@ -2917,9 +2914,7 @@ end
 --   ; R(A) now contains the function, mapped to 'foo'
 --
 function CodeGenerator:LocalFunctionDeclaration(node)
-  local functionName = node.name
-  local body         = node.body
-  self:compileFunction(body, self:declareLocalVariable(functionName))
+  self:compileFunction(node.body, self:declareLocalVariable(node.name))
 end
 
 -- Instruction Layout:
@@ -3313,7 +3308,7 @@ function CodeGenerator:compileStatementList(statementList)
       error("CodeGenerator: Statement node kind not supported: " .. node.kind)
     end
 
-    nodeHandler(self, node) -- e.g., self:IfStatement(node)
+    nodeHandler(self, node)
   end
 end
 
@@ -3344,8 +3339,8 @@ function CodeGenerator:compileFunctionBody(node)
 
   -- Generate default return statement.
   -- Every function must always end with a return instruction at the end in order
-  -- to be valid. If we *do* have an explicit return at the end, we will insert
-  -- the default return regardless. Having an extra return wouldn't cause any issues.
+  -- to be valid. If we do have an explicit return at the end, we will insert
+  -- the default return regardless.
   -- OP_RETURN [A, B]    return R(A), ... ,R(A+B-2)
   self:emitInstruction("RETURN", 0, 1, 0)
   self:leaveScope()
@@ -4018,17 +4013,17 @@ function BytecodeEmitter.encodeFunctionPrototype(proto)
   --
   -- Optimization: Instead of using `..` to concatenate strings repeatedly, we
   --               build a table of string parts and concatenate once at the end.
-  --               This is more efficient, especially for larger prototypes, as it
-  --               avoids creating intermediate strings on each concatenation.
+  --               This is more efficient, as it avoids creating intermediate
+  --               strings on each concatenation.
   return table.concat({
     -- Prototype Header --
-    BytecodeEmitter.encodeString("@tlc"),            -- Source name.
-    BytecodeEmitter.encodeUint32(0),                 -- Line defined (debug).
-    BytecodeEmitter.encodeUint32(0),                 -- Last line defined (debug).
-    BytecodeEmitter.encodeUint8(proto.numUpvals),    -- Number of upvalues.
-    BytecodeEmitter.encodeUint8(proto.numParams),    -- Number of parameters.
+    BytecodeEmitter.encodeString("@tlc"),         -- Source name.
+    BytecodeEmitter.encodeUint32(0),              -- Line defined (debug).
+    BytecodeEmitter.encodeUint32(0),              -- Last line defined (debug).
+    BytecodeEmitter.encodeUint8(proto.numUpvals), -- Number of upvalues.
+    BytecodeEmitter.encodeUint8(proto.numParams), -- Number of parameters.
     BytecodeEmitter.encodeUint8((proto.isVararg and VARARG_ISVARARG) or VARARG_NONE),
-    BytecodeEmitter.encodeUint8(proto.maxStackSize), -- Max stack size.
+    BytecodeEmitter.encodeUint8(proto.maxStackSize),
 
     -- Sections --
     BytecodeEmitter.encodeArray(proto.code, BytecodeEmitter.encodeInstruction),
@@ -4118,28 +4113,45 @@ local VirtualMachine = {}
 --
 -- Reference: https://www.lua.org/source/5.1/lvm.c.html#luaV_execute
 function VirtualMachine.executeClosure(closure, ...)
-  -- Each executing function gets its own register stack.
   --
   -- In our implementation, registers used in a function are stored in a unique
   -- table (`stack`) that is created when the function is called. The original
-  -- implementation has a single large stack for all function calls that grows
-  -- and shrinks as functions are called and return. However, creating a new
-  -- table per function call is simpler to implement in Lua and doesn't have
-  -- significant performance implications for our educational purposes, so
-  -- we take that approach for clarity.
+  -- Lua VM's implementation has a single large stack for all function calls
+  -- that grows and shrinks as functions are called and return. However,
+  -- creating a new table per function call is simpler to implement in Lua and
+  -- doesn't have significant performance implications for our educational
+  -- purposes, so we take that approach for clarity.
+  --
+  -- In the VM we use closures to represent function values, and each closure has
+  -- a reference to its prototype (which contains the instructions and constants),
+  -- the reason why we don't use prototypes instead is because closures allow us
+  -- to hold runtime information like upvalues and the environment, which is
+  -- necessary for executing the function correctly.
+  --
+  -- Think of prototypes as the compile-time blueprint for a function's structure,
+  -- and closures as the runtime instances that carry the actual state needed for
+  -- execution.
 
-  local stack        = {}
-  local env          = closure.env
-  local currentProto = closure.proto
-  local upvalues     = closure.upvalues
-  local code         = currentProto.code
-  local constants    = currentProto.constants
-  local numparams    = currentProto.numParams
-  local isVararg     = currentProto.isVararg
-  local stackTop     = 0
+  local stack = {}
+
+  -- stackTop is a useful abstraction that can hold a runtime information of how
+  -- many registers are currently in use. This is especially important for instructions
+  -- like CALL and RETURN where the number of arguments or return values may not be
+  -- know until runtime (when USE_CURRENT_TOP is used). By tracking stackTop, the VM can
+  -- correctly handle these cases without needing to hardcode limits or make assumptions.
+  local stackTop = 0
+
   local openUpvalues = {}
-
   local highestOpenUpvalue = -1
+
+  local closureEnv    = closure.env
+  local closureProto  = closure.proto
+  local closureUpvals = closure.upvalues
+
+  local protoCode      = closureProto.code
+  local protoConstants = closureProto.constants
+  local protoNumParams = closureProto.numParams
+  local protoIsVararg  = closureProto.isVararg
 
   -- Gets a value from either the stack or constants table. Register or constant.
   --
@@ -4148,7 +4160,7 @@ function VirtualMachine.executeClosure(closure, ...)
   -- we negate the index when accessing the constants table.
   local function rk(index)
     if index < 0 then
-      return constants[-index]
+      return protoConstants[-index]
     end
     return stack[index]
   end
@@ -4157,19 +4169,18 @@ function VirtualMachine.executeClosure(closure, ...)
   local fixedArguments = { ... }
 
   -- Named parameters are copied into R(0) .. R(numparams - 1).
-  for paramIdx = 1, numparams do
+  for paramIdx = 1, protoNumParams do
     stack[paramIdx - 1] = fixedArguments[paramIdx]
   end
-  if isVararg then
-    -- Reference: https://www.lua.org/source/5.1/ldo.c.html#adjust_varargs
-    varargCount, vararg = pack(select(numparams + 1, ...))
+  if protoIsVararg then
+    varargCount, vararg = pack(select(protoNumParams + 1, ...))
   end
 
   -- The current instruction index (also referred to as PC).
   local programCounter = 1
-  local codeLength     = #code
+  local codeLength     = #protoCode
   while programCounter <= codeLength do
-    local instruction = code[programCounter]
+    local instruction = protoCode[programCounter]
     local opname  = instruction.opname
     local a, b, c = instruction.a, instruction.b, instruction.c
 
@@ -4186,7 +4197,7 @@ function VirtualMachine.executeClosure(closure, ...)
     -- OP_LOADK [A, Bx]    R(A) = Kst(Bx)
     -- Load a constant into a register.
     elseif opname == "LOADK" then
-      stack[a] = constants[-b]
+      stack[a] = protoConstants[-b]
 
     -- OP_LOADBOOL [A, B, C]    R(A) := (Bool)B; if (C) pc++
     -- Load a boolean into a register. Skip next instruction if C is non-zero.
@@ -4206,13 +4217,13 @@ function VirtualMachine.executeClosure(closure, ...)
     -- OP_GETUPVAL [A, B]    R(A) := UpValue[B]
     -- Read an upvalue into a register.
     elseif opname == "GETUPVAL" then
-      local upvalue = upvalues[b + 1]
+      local upvalue = closureUpvals[b + 1]
       stack[a] = upvalue.stack[upvalue.index]
 
     -- OP_GETGLOBAL [A, Bx]    R(A) := Gbl[Kst(Bx)]
     -- Read a global variable into a register.
     elseif opname == "GETGLOBAL" then
-      stack[a] = env[constants[-b]]
+      stack[a] = closureEnv[protoConstants[-b]]
 
     -- OP_GETTABLE [A, B, C]    R(A) := R(B)[RK(C)]
     -- Read a table element into a register.
@@ -4222,12 +4233,12 @@ function VirtualMachine.executeClosure(closure, ...)
     -- OP_SETGLOBAL [A, Bx]    Gbl[Kst(Bx)] := R(A)
     -- Write a register value into a global variable.
     elseif opname == "SETGLOBAL" then
-      env[rk(b)] = stack[a]
+      closureEnv[rk(b)] = stack[a]
 
     -- OP_SETUPVAL [A, B]    UpValue[B] := R(A)
     -- Write a register value into an upvalue.
     elseif opname == "SETUPVAL" then
-      local upvalue = upvalues[b + 1]
+      local upvalue = closureUpvals[b + 1]
       upvalue.stack[upvalue.index] = stack[a]
 
     -- OP_SETTABLE [A, B, C]    R(A)[RK(B)] := RK(C)
@@ -4338,7 +4349,7 @@ function VirtualMachine.executeClosure(closure, ...)
         -- The Lua 5.1 spec guarantees that TEST/TFORLOOP is always followed by JMP.
         -- Since TLC's own compiler always emits this sequence, we trust the bytecode
         -- and skip the validation check for performance.
-        local nextInstruction = code[programCounter + 1]
+        local nextInstruction = protoCode[programCounter + 1]
         local jumpDistance = nextInstruction.b
         programCounter = programCounter + 1 + jumpDistance
       end
@@ -4353,7 +4364,7 @@ function VirtualMachine.executeClosure(closure, ...)
         -- The Lua 5.1 spec guarantees that TEST/TFORLOOP is always followed by JMP.
         -- Since TLC's own compiler always emits this sequence, we trust the bytecode
         -- and skip the validation check for performance.
-        local nextInstruction = code[programCounter + 1]
+        local nextInstruction = protoCode[programCounter + 1]
         local jumpDistance = nextInstruction.b
         programCounter = programCounter + 1 + jumpDistance
       else
@@ -4414,9 +4425,9 @@ function VirtualMachine.executeClosure(closure, ...)
     --                       if R(A) <?= R(A+1) then { pc+=sBx R(A+3)=R(A) }
     -- Iterate a numeric for loop.
     elseif opname == "FORLOOP" then
+      local limit = stack[a + 1]
       local step  = stack[a + 2]
       local idx   = stack[a] + step
-      local limit = stack[a + 1]
 
       local shouldContinue = false
       if step >= 0 then
@@ -4427,8 +4438,8 @@ function VirtualMachine.executeClosure(closure, ...)
 
       if shouldContinue then
         programCounter = programCounter + b
-        stack[a] = idx
-        stack[a + 3] = idx
+        stack[a] = idx -- The internal index register.
+        stack[a + 3] = idx -- The user-visible control variable register.
       end
 
     -- OP_FORPREP [A, sBx]    R(A)-=R(A+2) pc+=sBx
@@ -4467,12 +4478,12 @@ function VirtualMachine.executeClosure(closure, ...)
       local control  = stack[a + 2]
       local state    = stack[a + 1]
       local iterator = stack[a]
-      local returns = { iterator(state, control) }
+      local results = { iterator(state, control) }
 
       -- Place results on the stack, starting at cb.
       -- The number of results to keep is specified by `c`.
       for i = cb, cb + c - 1 do
-        stack[i] = returns[i - cb + 1]
+        stack[i] = results[i - cb + 1]
       end
 
       -- Check if the new control variable is nil.
@@ -4481,9 +4492,9 @@ function VirtualMachine.executeClosure(closure, ...)
         stack[cb - 1] = stack[cb]
 
         -- The Lua 5.1 spec guarantees that TEST/TFORLOOP is always followed by JMP.
-        -- Since TLC's own compiler always emits this sequence, we trust the bytecode
+        -- Since TLC's own compiler always emits this sequence, we trust the program
         -- and skip the validation check for performance.
-        local nextInstruction = code[programCounter + 1]
+        local nextInstruction = protoCode[programCounter + 1]
         local jumpDistance = nextInstruction.b
         programCounter = programCounter + 1 + jumpDistance
       else
@@ -4520,10 +4531,10 @@ function VirtualMachine.executeClosure(closure, ...)
     -- OP_CLOSE [A]    close all variables in the stack up to (>=) R(A)
     elseif opname == "CLOSE" then
       for upvalIdx = a, highestOpenUpvalue do
-        local uv = openUpvalues[upvalIdx]
-        if uv then
-          uv.stack = { stack[uv.index] }
-          uv.index = 1
+        local upvalue = openUpvalues[upvalIdx]
+        if upvalue then
+          upvalue.stack = { stack[upvalue.index] }
+          upvalue.index = 1
           openUpvalues[upvalIdx] = nil
         end
       end
@@ -4532,7 +4543,7 @@ function VirtualMachine.executeClosure(closure, ...)
     -- OP_CLOSURE [A, Bx]    R(A) := closure(KPROTO[Bx], R(A), ... ,R(A+n))
     -- Create a new closure (function) and store it in a register.
     elseif opname == "CLOSURE" then
-      local tProto = currentProto.protos[b + 1]
+      local tProto = closureProto.protos[b + 1]
       local tProtoUpvalues = {}
 
       -- Consume pseudo-instructions that bind closure upvalues.
@@ -4542,7 +4553,7 @@ function VirtualMachine.executeClosure(closure, ...)
       for upvalueIndex = 1, tProto.numUpvals do
         programCounter = programCounter + 1
 
-        local nextInstruction = code[programCounter]
+        local nextInstruction = protoCode[programCounter]
         local nextOpname = nextInstruction.opname
         local source = nextInstruction.b
 
@@ -4557,7 +4568,7 @@ function VirtualMachine.executeClosure(closure, ...)
           end
           tProtoUpvalues[upvalueIndex] = upvalue
         elseif nextOpname == "GETUPVAL" then
-          local upvalue = upvalues[source + 1]
+          local upvalue = closureUpvals[source + 1]
           tProtoUpvalues[upvalueIndex] = upvalue
         else
           error(
@@ -4567,17 +4578,14 @@ function VirtualMachine.executeClosure(closure, ...)
         end
       end
 
-      local tClosure = {
+      local newClosure = {
         proto    = tProto,
         upvalues = tProtoUpvalues,
-        env      = env
+        env      = closureEnv
       }
 
-      -- We use a wrapper function to represent the closure, as this allows us to
-      -- pass the tClosure table to the `:executeClosure` method when the function
-      -- is called.
       stack[a] = function(...)
-        return VirtualMachine.executeClosure(tClosure, ...)
+        return VirtualMachine.executeClosure(newClosure, ...)
       end
 
     -- OP_VARARG [A, B]    R(A), R(A+1), ..., R(A+B-1) = vararg
@@ -4599,6 +4607,9 @@ function VirtualMachine.executeClosure(closure, ...)
     -- Advance to the next instruction.
     programCounter = programCounter + 1
   end
+
+  -- Should never be reached, as every valid Lua function prototype should
+  -- always end with a RETURN instruction that exits the function.
   return
 end
 
@@ -4674,6 +4685,7 @@ return {
   --       Tiny Lua Compiler
   --          MIT License
 
+  -- Raw components (classes)
   Tokenizer       = Tokenizer,
   Parser          = Parser,
   CodeGenerator   = CodeGenerator,
