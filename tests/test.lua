@@ -1,15 +1,9 @@
 local Suite = require("tests.library")
-
 local suite = Suite.new()
-local modules = {
-  "tests.lexer.lexer",
-  "tests.parser.parser",
-  "tests.bytecode_emitter.bytecode_emitter",
-  "tests.language.semantics",
-}
 
-for _, moduleName in ipairs(modules) do
-  require(moduleName)(suite)
-end
+require("tests.lexer.lexer")(suite)
+require("tests.parser.parser")(suite)
+require("tests.bytecode_emitter.bytecode_emitter")(suite)
+require("tests.language.semantics")(suite)
 
 os.exit(suite:summary())

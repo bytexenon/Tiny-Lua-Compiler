@@ -27,15 +27,16 @@ local function serialize(value, seen)
 
   local keys = {}
   for key in pairs(value) do
-    keys[#keys + 1] = key
+    table.insert(keys, key)
   end
+
   table.sort(keys, function(left, right)
     return tostring(left) < tostring(right)
   end)
 
   local parts = {}
   for _, key in ipairs(keys) do
-    parts[#parts + 1] = tostring(key) .. " = " .. serialize(value[key], seen)
+    table.insert(parts, tostring(key) .. " = " .. serialize(value[key], seen))
   end
 
   seen[value] = nil
@@ -104,7 +105,6 @@ function Suite.new()
   return setmetatable({
     groups = {},
     results = {},
-    infiniteLoopLimit = INFINITE_LOOP_LIMIT,
   }, Suite)
 end
 
@@ -143,14 +143,14 @@ function Suite:it(name, func)
     error(
       string.format(
         "TLCTest: Infinite loop detected after %d instructions",
-        self.infiniteLoopLimit
+        INFINITE_LOOP_LIMIT
       ),
       0
     )
   end
 
   if debug.sethook then
-    debug.sethook(terminateInfiniteLoop, "", self.infiniteLoopLimit)
+    debug.sethook(terminateInfiniteLoop, "", INFINITE_LOOP_LIMIT)
   end
 
   local ok, result = xpcall(func, function(err)
@@ -195,6 +195,9 @@ end
 
 function Suite:compileAndRun(code)
   if _VERSION == "Lua 5.1" then
+    -- TODO: When running on Lua 5.1, we probably should run it both in the VM
+    -- and through `loadstring`.
+
     local func, err = loadstring(tlc.compile(code))
     if not func then
       error(err, 0)

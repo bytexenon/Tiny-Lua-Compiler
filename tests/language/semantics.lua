@@ -3,9 +3,9 @@ local tlc = require("tlc")
 return function(suite)
   suite:describe("Language semantics", function()
     suite:describe("Expressions", function()
-      suite:it("handles common numeric formats", function()
+      suite:it("handles all numeric formats", function()
         suite:assertMatchesLua([[
-          return 123 + 0.5 + 1e2 + .25e1 + 0.2e-1
+          return 123 + 0.5 + 1e2 + .25e1 + 0.2e-1 + 0x5p5
         ]])
       end)
 
